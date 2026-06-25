@@ -1,0 +1,24 @@
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Cache (Phase 2+)
+cache.json
+*.sqlite
+*.db
+
+# Lokale Daten-Dumps (enthalten Kundendaten – NIE einchecken)
+data/
+*.csv
+*.json
+!.vscode/*.json
+
+# Python
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Service-Account-Credentials (Phase 2b)
+credentials*.json
+service-account*.json

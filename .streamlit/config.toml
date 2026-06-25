@@ -1,0 +1,13 @@
+# morr.de-Branding – Farben aus src/styles/global.css der Astro-Site
+[theme]
+base = "light"
+primaryColor = "#3636D9"               # --persian (Akzent)
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F0FA"   # --magnolia
+textColor = "#1B1B6D"                  # --ink / --midnight
+linkColor = "#3636D9"
+headingFont = "Fraunces, serif"
+bodyFont = "Lato, sans-serif"
+
+[server]
+headless = true

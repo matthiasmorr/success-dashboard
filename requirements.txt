@@ -1,0 +1,10 @@
+# Laufzeit-Abhängigkeiten (lokal + Streamlit Community Cloud)
+streamlit
+requests
+python-dotenv
+pandas
+openpyxl          # Excel-Lesen (Festbuchungen .xlsx)
+pypdf             # PDF-Text für die KI-Buchungsklassifikation
+anthropic         # Claude (Buchungswert + Postfach-Summaries)
+msal              # Microsoft Graph (buchung@-Postfach, app-only)
+google-auth-oauthlib  # nur für auth_youtube.py / auth_drive.py (OAuth-Consent)
