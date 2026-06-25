@@ -11,3 +11,4 @@ bodyFont = "Lato, sans-serif"
 
 [server]
 headless = true
+enableStaticServing = true   # serviert static/ unter app/static/ (Home-Screen-Icon)

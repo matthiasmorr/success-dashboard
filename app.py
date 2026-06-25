@@ -34,7 +34,18 @@ try:
 except Exception:  # noqa: BLE001 – keine secrets.toml vorhanden (lokal ohne Secrets)
     pass
 
-st.set_page_config(page_title="Daily Morr", page_icon="🚢", layout="wide")
+st.set_page_config(page_title="Daily Morr", page_icon="static/app-icon.png", layout="wide")
+
+# Home-Screen-Icon (iOS „Zum Home-Bildschirm") + App-Name. Streamlit serviert
+# Dateien aus static/ unter app/static/ (enableStaticServing in config.toml).
+# Die Links landen im Body, iOS liest sie beim Hinzufügen trotzdem aus.
+st.markdown(
+    '<link rel="apple-touch-icon" sizes="180x180" href="app/static/app-icon.png">'
+    '<link rel="icon" type="image/png" href="app/static/app-icon.png">'
+    '<meta name="apple-mobile-web-app-title" content="Daily Morr">'
+    '<meta name="apple-mobile-web-app-capable" content="yes">',
+    unsafe_allow_html=True,
+)
 
 # --- morr.de-Branding (Farben/Schriften aus der Astro-Site) ---
 st.markdown(
