@@ -1,0 +1,41 @@
+name: Prefetch Snapshot
+
+# Rechnet die Connectoren durch (prefetch.py) und lädt den fertigen Snapshot
+# privat nach Google Drive. Die Streamlit-Cloud-App holt ihn beim Start, statt
+# selbst 3-5 Min live zu rechnen. Snapshot enthält Kundendaten → NUR Drive, nie ins Repo.
+#
+# Voraussetzung: Repo-Secret `DOTENV` mit dem kompletten .env-Inhalt
+#   (inkl. DRIVE_OAUTH_REFRESH_TOKEN mit vollem drive-Scope, s. auth_drive.py).
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # alle 30 Min (UTC; GitHub kann unter Last verzögern)
+  workflow_dispatch: {}       # manuell auslösbar
+
+# Nie zwei Läufe parallel (alter wird abgebrochen)
+concurrency:
+  group: prefetch
+  cancel-in-progress: true
+
+jobs:
+  prefetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: .env aus Secret schreiben
+        env:
+          DOTENV: ${{ secrets.DOTENV }}
+        run: printf '%s\n' "$DOTENV" > .env
+
+      - name: Abhängigkeiten installieren
+        run: pip install -r requirements.txt
+
+      - name: Prefetch + Snapshot nach Drive hochladen
+        run: python prefetch.py

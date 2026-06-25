@@ -187,6 +187,16 @@ def load_all(force_live: bool = False):
         snap, ts = snapshot.load(max_age_min=45)
         if snap is not None:
             return snap, ts
+        # Kein (frischer) lokaler Snapshot → in der Cloud den von der GitHub-Action
+        # hochgeladenen aus Drive holen, statt 3-5 Min live zu rechnen.
+        try:
+            from connectors import drive
+            drive.download_snapshot()
+        except Exception:  # noqa: BLE001
+            pass
+        snap, ts = snapshot.load(max_age_min=180)
+        if snap is not None:
+            return snap, ts
     results = _compute_all()
     snapshot.save(results)
     return results, time.time()

@@ -6,7 +6,8 @@ Damit das Dashboard die Festbuchungen-Excel selbst frisch aus Drive zieht
 
 Voraussetzung (Google Cloud Console, gleiches Projekt wie YouTube):
   1. "Google Drive API" aktivieren.
-  2. OAuth-Consent-Screen: Scope `.../auth/drive.readonly` hinzufügen.
+  2. OAuth-Consent-Screen: Scope `.../auth/drive` hinzufügen (voller Drive-Zugriff –
+     nötig zum HOCHLADEN des Snapshots beim Cloud-Vorladen; readonly reicht nur zum Lesen).
   3. Mit dem Google-Konto bestätigen, das Zugriff auf den Kreuzfahrtstudio-Ordner hat
      (bei "App nicht verifiziert": Erweitert → Weiter zu … (unsicher)).
 
@@ -21,7 +22,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+# Voller Drive-Scope: liest die Festbuchungen-Excel UND lädt den Snapshot hoch.
+SCOPES = ["https://www.googleapis.com/auth/drive"]
 ENV = Path(__file__).with_name(".env")
 
 

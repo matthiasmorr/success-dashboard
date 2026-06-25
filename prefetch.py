@@ -29,6 +29,8 @@ def main() -> None:
     snapshot.save(results)
     ok = sum(1 for r in results if r.ok)
     print(f"Snapshot gespeichert: {ok}/{len(results)} Connectoren OK in {time.time() - t0:.1f}s")
+    # Cloud-Vorladen: fertigen Snapshot privat in Drive ablegen (für die Cloud-App)
+    print("Drive-Upload:", drive.upload_snapshot())
 
 
 if __name__ == "__main__":
