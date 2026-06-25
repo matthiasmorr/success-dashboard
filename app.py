@@ -37,14 +37,30 @@ except Exception:  # noqa: BLE001 – keine secrets.toml vorhanden (lokal ohne S
 st.set_page_config(page_title="Daily Morr", page_icon="static/app-icon.png", layout="wide")
 
 # Home-Screen-Icon (iOS „Zum Home-Bildschirm") + App-Name. Streamlit serviert
-# Dateien aus static/ unter app/static/ (enableStaticServing in config.toml).
-# Die Links landen im Body, iOS liest sie beim Hinzufügen trotzdem aus.
-st.markdown(
-    '<link rel="apple-touch-icon" sizes="180x180" href="app/static/app-icon.png">'
-    '<link rel="icon" type="image/png" href="app/static/app-icon.png">'
-    '<meta name="apple-mobile-web-app-title" content="Daily Morr">'
-    '<meta name="apple-mobile-web-app-capable" content="yes">',
-    unsafe_allow_html=True,
+# static/ unter app/static/ (enableStaticServing in config.toml). iOS liest
+# apple-touch-icon nur aus dem <head> – st.markdown landet im Body, daher per JS
+# in window.parent.document.head injizieren (zuverlässig auch beim Hinzufügen).
+st.components.v1.html(
+    """
+    <script>
+    const d = window.parent.document;
+    const set = (rel, href) => {
+      let l = d.querySelector('link[rel="' + rel + '"]');
+      if (!l) { l = d.createElement('link'); l.setAttribute('rel', rel); d.head.appendChild(l); }
+      l.setAttribute('href', href);
+    };
+    set('apple-touch-icon', 'app/static/app-icon.png');
+    set('apple-touch-icon-precomposed', 'app/static/app-icon.png');
+    const meta = (name, content) => {
+      let m = d.querySelector('meta[name="' + name + '"]');
+      if (!m) { m = d.createElement('meta'); m.setAttribute('name', name); d.head.appendChild(m); }
+      m.setAttribute('content', content);
+    };
+    meta('apple-mobile-web-app-title', 'Daily Morr');
+    meta('apple-mobile-web-app-capable', 'yes');
+    </script>
+    """,
+    height=0,
 )
 
 # --- morr.de-Branding (Farben/Schriften aus der Astro-Site) ---
