@@ -17,6 +17,12 @@ from dotenv import load_dotenv
 from connectors import ALL_CONNECTORS, Category, snapshot
 from connectors.digistore import _euro
 
+# Zeitzone fest auf Europe/Berlin – der Cloud-Server läuft sonst in UTC (2h Versatz
+# bei „Stand" UND bei der „heute"/Tagesgrenzen-Logik).
+os.environ["TZ"] = "Europe/Berlin"
+if hasattr(time, "tzset"):
+    time.tzset()
+
 load_dotenv()
 
 # Streamlit Community Cloud: Secrets → os.environ, damit die Connectoren (os.getenv)

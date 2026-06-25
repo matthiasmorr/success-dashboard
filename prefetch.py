@@ -7,9 +7,14 @@ Aufruf:  ./venv/bin/python prefetch.py
 """
 from __future__ import annotations
 
+import os
 import time
 
 from dotenv import load_dotenv
+
+os.environ["TZ"] = "Europe/Berlin"
+if hasattr(time, "tzset"):
+    time.tzset()
 
 load_dotenv()
 
