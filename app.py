@@ -177,39 +177,71 @@ def _compute_all():
     return [fetch() for fetch in ALL_CONNECTORS]
 
 
-@st.cache_data(ttl=600, show_spinner="🚢 Daily Morr lädt frische Daten – einen Moment …")
-def load_all(force_live: bool = False):
-    """Schnell aus dem Snapshot (vom prefetch.py-Hintergrundjob); nur wenn nötig live.
+@st.cache_data(ttl=600, show_spinner="🚢 Daily Morr lädt …")
+def load_all(mode: str = "auto"):
+    """Connector-Ergebnisse laden. Liefert (results, ts).
 
-    Liefert (results, ts). force_live=True erzwingt eine Live-Berechnung (Aktualisieren-Button).
+    mode:
+      "auto"  – lokaler Snapshot (≤45 Min), sonst aus Drive ziehen, sonst live (Standard).
+      "drive" – „Aktualisieren": neuesten Hintergrund-Snapshot aus Drive holen (schnell).
+                Der wird alle 30 Min von der GitHub-Action / launchd frisch gerechnet.
+      "live"  – alle Quellen direkt neu rechnen (langsam, in der Cloud einige Minuten).
     """
-    if not force_live:
-        snap, ts = snapshot.load(max_age_min=45)
-        if snap is not None:
-            return snap, ts
-        # Kein (frischer) lokaler Snapshot → in der Cloud den von der GitHub-Action
-        # hochgeladenen aus Drive holen, statt 3-5 Min live zu rechnen.
+    from connectors import drive
+
+    if mode == "live":
+        results = _compute_all()
+        snapshot.save(results)
+        return results, time.time()
+
+    if mode == "drive":
         try:
-            from connectors import drive
             drive.download_snapshot()
         except Exception:  # noqa: BLE001
             pass
-        snap, ts = snapshot.load(max_age_min=180)
+        snap, ts = snapshot.load()  # was da ist nehmen (Hintergrundjob hält ihn frisch)
         if snap is not None:
             return snap, ts
+        # Drive leer/nicht erreichbar → als Fallback live rechnen
+        results = _compute_all()
+        snapshot.save(results)
+        return results, time.time()
+
+    # auto
+    snap, ts = snapshot.load(max_age_min=45)
+    if snap is not None:
+        return snap, ts
+    # Kein frischer lokaler Snapshot → in der Cloud den von der GitHub-Action
+    # hochgeladenen aus Drive holen, statt 3-5 Min live zu rechnen.
+    try:
+        drive.download_snapshot()
+    except Exception:  # noqa: BLE001
+        pass
+    snap, ts = snapshot.load(max_age_min=180)
+    if snap is not None:
+        return snap, ts
     results = _compute_all()
     snapshot.save(results)
     return results, time.time()
 
 
-col_a, col_b = st.columns([1, 5])
+col_a, col_b = st.columns([1, 4])
 with col_a:
-    if st.button("🔄 Aktualisieren"):
+    if st.button("🔄 Aktualisieren",
+                 help="Holt den neuesten Hintergrund-Stand (wird alle 30 Min frisch "
+                      "gerechnet) – ein paar Sekunden."):
         load_all.clear()
-        st.session_state["_force_live"] = True
+        st.session_state["_mode"] = "drive"
+        st.rerun()
+with col_b:
+    if st.button("🐢 Komplett neu rechnen",
+                 help="Rechnet alle Quellen direkt neu. In der Cloud einige Minuten – "
+                      "nur nötig, wenn etwas ganz Frisches sofort erscheinen soll."):
+        load_all.clear()
+        st.session_state["_mode"] = "live"
         st.rerun()
 
-results, _data_ts = load_all(st.session_state.pop("_force_live", False))
+results, _data_ts = load_all(st.session_state.pop("_mode", "auto"))
 _stand = datetime.fromtimestamp(_data_ts).strftime("%d.%m.%Y %H:%M") if _data_ts else "—"
 st.caption(f"morr.de · Stand {_stand}")
 
