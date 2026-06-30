@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -139,9 +140,12 @@ st.markdown(
         border-radius:10px; padding:6px 9px; }
     .grow-label { color:#5a5a86; font-size:.68rem; font-weight:700; line-height:1.2;
         white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .grow-value { color:#1B1B6D; font-family:'Fraunces',serif; font-weight:700;
-        font-size:1.0rem; line-height:1.2; }
-    .grow-delta { color:#3a8a3a; font-size:.64rem; line-height:1.2; }
+    /* Nur die Änderung seit gestern – bewusst groß (Tageswachstum auf einen Blick) */
+    .grow-change { font-family:'Fraunces',serif; font-weight:700; font-size:1.6rem;
+        line-height:1.2; margin-top:1px; }
+    .grow-change.pos { color:#2f7a2f; }
+    .grow-change.neg { color:#b23b3b; }
+    .grow-change.zero { color:#8a8ab5; }
     /* Auflistung Buchungen/Optionen */
     .bk-list { margin: 4px 0 12px; border:1px solid #e7e6f7; border-radius:12px; overflow:hidden; }
     .bk-row { display:flex; align-items:center; gap:12px; padding:8px 14px; border-bottom:1px solid #efeefa; }
@@ -166,6 +170,7 @@ st.markdown(
     .act-date { color:#8a8ab5; font-size:.82rem; }
     .act-betreff { color:#5a5a86; font-size:.84rem; margin:1px 0 3px; }
     .act-text { color:#3a3a5a; font-size:.92rem; line-height:1.35; }
+    .act-reply { color:#2f7a2f; font-weight:700; }
     .bk-date { color:#8a8ab5; font-size:.85rem; }
     /* Lauf-Indikator oben rechts: Streamlits rennendes Männchen raus, maritimes Schiff rein */
     [data-testid="stStatusWidgetRunningManIcon"] { display:none !important; }
@@ -313,17 +318,40 @@ def _band(b):
     )
 
 
+def _change_of(m):
+    """Die Änderung seit gestern aus einer Wachstums-Metrik herausziehen – kompakt.
+
+    Social/YouTube tragen sie im delta ('+X seit gestern'), Morrletter direkt im
+    Wert ('+12' neue Abos heute). Gibt None, wenn noch kein Vergleich vorliegt.
+    """
+    d = m.delta
+    if isinstance(d, str) and "seit gestern" in d:
+        return d.split(" seit gestern")[0].strip()
+    v = str(m.value)
+    if v[:1] in ("+", "-", "−", "±"):   # Wert ist selbst schon eine Änderung (Morrletter)
+        return v
+    if isinstance(d, (int, float)):
+        return f"{'+' if d >= 0 else ''}{int(d)}"
+    return None
+
+
 def _growth_strip(metrics):
-    """Reichweite kompakt: kleine Kacheln (Label · Zahl · „+X seit gestern") in einer Reihe."""
+    """Reichweite kompakt: je Account NUR die Änderung seit gestern – groß."""
     cells = []
     for m in metrics:
-        delta = (f'<div class="grow-delta">{html.escape(str(m.delta))}</div>'
-                 if m.delta not in (None, "") else "")
+        change = _change_of(m)
+        if change in (None, ""):
+            big, sign = "–", "zero"
+        else:
+            big = change
+            digits = change.lstrip("+-−± ")
+            zero = digits in ("", "0") or set(digits) <= {"0"}
+            sign = "zero" if zero else ("neg" if change[:1] in ("-", "−") else "pos")
         cells.append(
             f'<div class="grow-item" title="{html.escape(m.help or "")}">'
             f'<div class="grow-label">{html.escape(m.label)}</div>'
-            f'<div class="grow-value">{html.escape(str(m.value))}</div>'
-            f'{delta}</div>')
+            f'<div class="grow-change {sign}">{html.escape(big)}</div>'
+            f'</div>')
     return '<div class="grow-row">' + "".join(cells) + "</div>"
 
 
@@ -344,41 +372,102 @@ def _chips(items):
 
 
 def _booking_list(items):
+    # Alles zu EINER Person bündeln: mehrere Vorgänge desselben Nachnamens (am selben
+    # Tag) werden zu einer Zeile – Werte summiert, Reisen gebündelt. Eine feste Buchung
+    # sticht die Option. Einträge ohne Namen bleiben einzeln stehen.
+    grouped: list[list[dict]] = []
+    index: dict[str, list[dict]] = {}
+    for it in items[:60]:
+        key = (it.get("nachname") or "").strip().lower()
+        if key and key in index:
+            index[key].append(it)
+        else:
+            g = [it]
+            grouped.append(g)
+            if key:
+                index[key] = g
+
     rows = []
-    for it in items[:20]:
-        opt = it.get("art") == "option"
+    for g in grouped[:20]:
+        opt = all(x.get("art") == "option" for x in g)   # nur Option, wenn KEINE feste Buchung dabei
         badge = "Option" if opt else "Buchung"
         cls = "b-option" if opt else "b-buchung"
-        iso = it.get("date", "")
+        total = sum(x.get("value", 0) or 0 for x in g)
+        iso = max((x.get("date", "") for x in g), default="")
         tag = f"{iso[8:10]}.{iso[5:7]}." if len(iso) >= 10 else ""
-        name = html.escape(it.get("nachname", "") or "")
+        name = html.escape(g[0].get("nachname", "") or "")
         name_html = f'<span class="bk-name">{name}</span>' if name else ""
+        labels = list(dict.fromkeys(x.get("label", "") for x in g if x.get("label")))
+        label_txt = " · ".join(labels)
+        if len(g) > 1:   # mehrere Vorgänge einer Person sichtbar machen
+            n = f"{len(g)} Vorgänge"
+            label_txt = f"{n} · {label_txt}" if label_txt else n
         rows.append(
             f'<div class="bk-row"><span class="bk-badge {cls}">{badge}</span>'
-            f'<span class="bk-val">{_euro(it.get("value", 0))}</span>'
+            f'<span class="bk-val">{_euro(total)}</span>'
             f'{name_html}'
-            f'<span class="bk-label">{html.escape(it.get("label", ""))}</span>'
+            f'<span class="bk-label">{html.escape(label_txt)}</span>'
             f'<span class="bk-date">{tag}</span></div>')
     return '<div class="bk-list">' + "".join(rows) + "</div>"
 
 
 def _activity_list(items):
-    rows = []
+    # Alles zu EINER Person bündeln: eingehende Mail + gesendete Antwort eines Vorgangs
+    # (und mehrere Vorgänge derselben Person) erscheinen in EINER Karte – nicht mehr als
+    # getrennte Felder. Frank Tente = ein Feld mit Anliegen + Antwort.
+    def _name_key(it):
+        n = (it.get("kontakt") or "").strip()
+        return re.sub(r"[^a-z0-9äöüß]", "", n.lower()) if (n and "@" not in n) else ""
+
+    # 1) nach Konversation gruppieren (verbindet eingehend + gesendet zuverlässig)
+    groups: list[list[dict]] = []
+    by_cid: dict[str, list[dict]] = {}
     for it in items:
-        out = it.get("direction") == "out"
-        prob = it.get("problem") and not out
-        iso = it.get("date", "")
+        cid = it.get("cid") or ""
+        if cid and cid in by_cid:
+            by_cid[cid].append(it)
+        else:
+            g = [it]
+            groups.append(g)
+            if cid:
+                by_cid[cid] = g
+    # 2) Gruppen derselben Person (gleicher Anzeigename) zusätzlich zusammenführen
+    merged: list[list[dict]] = []
+    by_name: dict[str, list[dict]] = {}
+    for g in groups:
+        nk = next((_name_key(x) for x in g if _name_key(x)), "")
+        if nk and nk in by_name:
+            by_name[nk].extend(g)
+        else:
+            merged.append(g)
+            if nk:
+                by_name[nk] = g
+
+    rows = []
+    for g in merged:
+        kontakt = next((x.get("kontakt") for x in g
+                        if x.get("kontakt") and "@" not in x.get("kontakt")),
+                       g[0].get("kontakt", "")) or ""
+        ins = [x for x in g if x.get("direction") != "out"]
+        outs = [x for x in g if x.get("direction") == "out"]
+        answered = bool(outs)
+        problem = any(x.get("problem") for x in ins) and not answered
+        cls = "act-out" if answered else ("act-problem" if problem else "")
+        lead = "✅ " if answered else ("⚠️ " if problem else "")
+        flag = '<span class="act-flag">beantwortet</span>' if answered else ""
+        iso = max((x.get("date", "") for x in g), default="")
         tag = f"{iso[8:10]}.{iso[5:7]}." if len(iso) >= 10 else ""
-        cls = "act-out" if out else ("act-problem" if prob else "")
-        lead = "↗️ " if out else ("⚠️ " if prob else "")
-        name = ("An: " if out else "") + (it.get("kontakt", "") or "")
-        flag = '<span class="act-flag">gesendet</span>' if out else ""
+        betreff = (ins[0].get("betreff") if ins else g[0].get("betreff", "")) or ""
+        lines = [html.escape(x.get("text", "")) for x in ins if x.get("text")]
+        lines += ['<span class="act-reply">↗️ Antwort:</span> ' + html.escape(x.get("text", ""))
+                  for x in outs if x.get("text")]
+        body = "<br>".join(lines)
         rows.append(
             f'<div class="act-row {cls}">'
-            f'<div class="act-head">{lead}<span class="act-kontakt">{html.escape(name)}</span>'
+            f'<div class="act-head">{lead}<span class="act-kontakt">{html.escape(kontakt)}</span>'
             f'{flag}<span class="act-date">{tag}</span></div>'
-            f'<div class="act-betreff">{html.escape(it.get("betreff",""))}</div>'
-            f'<div class="act-text">{html.escape(it.get("text",""))}</div></div>')
+            f'<div class="act-betreff">{html.escape(betreff)}</div>'
+            f'<div class="act-text">{body}</div></div>')
     return '<div class="act-list">' + "".join(rows) + "</div>"
 
 

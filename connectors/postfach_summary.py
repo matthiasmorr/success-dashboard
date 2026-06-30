@@ -155,7 +155,8 @@ def summaries() -> list[dict] | None:
         out.append({"kontakt": who, "betreff": m.get("subject", ""),
                     "text": info.get("zusammenfassung", ""),
                     "problem": bool(info.get("problem")) and direction == "in",
-                    "direction": direction, "date": when.date().isoformat()})
+                    "direction": direction, "date": when.date().isoformat(),
+                    "cid": cid})   # Konversation: bündelt eingehend + gesendete Antwort
 
     if changed:
         _save_cache(cache)
