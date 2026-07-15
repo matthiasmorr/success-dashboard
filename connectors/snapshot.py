@@ -25,6 +25,30 @@ def save(results) -> None:
     tmp.replace(SNAP)
 
 
+def merge_with_previous(results):
+    """Fehlgeschlagene Connectoren durch ihr letztes OK-Ergebnis ersetzen.
+
+    Läuft ein (Pre-)Fetch offline oder halb (DNS weg, API-Aussetzer), würde der
+    neue Snapshot den guten alten überschreiben – das Dashboard zeigt dann nur
+    noch Striche. Stattdessen behält jeder Connector seinen letzten guten Stand;
+    »nicht konfiguriert« bleibt sichtbar (das ist ein echter Zustand, kein Ausfall).
+    """
+    prev, _ts = load()
+    if not prev:
+        return results
+    by_name = {}
+    for r in prev:
+        name = getattr(r, "name", None)
+        if name:
+            by_name[name] = r
+    merged = []
+    for r in results:
+        old = by_name.get(getattr(r, "name", None))
+        failed = not getattr(r, "ok", True) and getattr(r, "configured", True)
+        merged.append(old if (failed and old is not None and getattr(old, "ok", False)) else r)
+    return merged
+
+
 def load(max_age_min: float | None = None):
     """(results, ts) liefern – oder (None, ts/None), wenn nicht vorhanden/zu alt/defekt."""
     if not SNAP.exists():

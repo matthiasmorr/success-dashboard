@@ -57,10 +57,13 @@ def update(days: int = 40, top: int = 200) -> dict | None:
                  "value": c["value"], "state": state, "optionsfrist": c.get("optionsfrist") or None,
                  "option_date": None, "buchung_date": None, "storno_date": None}
             led[vg] = e
-        # Status nur vorwärts; bei Erreichen/Höherstufung Wert+Label aktualisieren
+        # Status nur vorwärts; bei Erreichen/Höherstufung Wert+Label aktualisieren.
+        # value 0 = Preis im PDF nicht erkannt -> bekannten Wert NICHT überschreiben
+        # (sonst wird aus einer 4.620-€-Option eine 0-€-Buchung).
         if _RANK[state] >= _RANK[e["state"]]:
             e["state"] = state
-            e["value"] = c["value"]
+            if c["value"]:
+                e["value"] = c["value"]
             e["nachname"] = c.get("nachname") or e["nachname"]
             e["label"] = c.get("label") or e["label"]
         if state == "option" and c.get("optionsfrist"):
@@ -71,6 +74,36 @@ def update(days: int = 40, top: int = 200) -> dict | None:
             e[dk] = c["date"]
     _save(led)
     return led
+
+
+def merge(a: dict, b: dict) -> dict:
+    """Zwei Ledger-Stände (lokal ↔ Cloud) konfliktfrei vereinen.
+
+    Beide Seiten rechnen unabhängig (Mac-launchd und GitHub-Action) – ohne Merge
+    überschreibt der letzte Schreiber den anderen und Vorgänge »flackern«.
+    Regeln je Vorgang: höherer Status gewinnt (option < festbuchung), bekannter
+    Wert schlägt 0, Datumsfelder = frühestes bekanntes Datum, Storno bleibt.
+    """
+    out: dict = {}
+    for vg in set(a) | set(b):
+        ea, eb = a.get(vg), b.get(vg)
+        if ea is None or eb is None:
+            out[vg] = dict(ea or eb)
+            continue
+        hi, lo = ((ea, eb) if _RANK.get(ea.get("state"), 1) >= _RANK.get(eb.get("state"), 1)
+                  else (eb, ea))
+        e = dict(hi)
+        if not e.get("value") and lo.get("value"):
+            e["value"] = lo["value"]
+        for k in ("nachname", "label", "optionsfrist"):
+            if not e.get(k) and lo.get(k):
+                e[k] = lo[k]
+        for k in ("option_date", "buchung_date", "storno_date"):
+            ds = [x.get(k) for x in (ea, eb) if x.get(k)]
+            if ds:
+                e[k] = min(ds)
+        out[vg] = e
+    return out
 
 
 def _state_date(e: dict) -> str | None:

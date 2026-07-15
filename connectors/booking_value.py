@@ -34,6 +34,9 @@ SKIP_PDF = re.compile(
     r"kreditkart|authoris)", re.I)   # Storno/Cancellation NICHT skippen -> Ledger braucht sie
 # Reine Angebots-/Vorschlags-PDFs ('7 Nächte ab bis … mit der …'): kein Vorgang, keine Reservierung
 ANGEBOT_PDF = re.compile(r"^\s*\d+\s*N[äa]chte\s+ab\s+bis", re.I)
+# Bestätigungen, die NUR im Mail-Text stehen (ohne PDF – z.B. „vielen Dank für Ihre
+# Optionsbuchung!"): eng gefasste Marker, damit Rückfragen/Erwähnungen nicht triggern.
+TEXT_MARKER = re.compile(r"options?buchung|optionsbest|buchungsbest|auftragsbest", re.I)
 
 
 def _load_cache() -> dict:
@@ -78,13 +81,23 @@ def _pdf_text(raw: bytes) -> str:
     return txt
 
 
+def _html_text(html: str) -> str:
+    """Mail-Body (HTML) zu klassifizierbarem Text bereinigen."""
+    text = re.sub(r"<(style|script)[^>]*>.*?</\1>", " ", html or "", flags=re.S | re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = (text.replace("&nbsp;", " ").replace("&amp;", "&")
+                .replace("&gt;", ">").replace("&lt;", "<").replace("&euro;", "€"))
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _classify(text: str, subject: str) -> dict:
     """Claude-Inhaltsklassifikation → {art, value, vorgang}."""
     import anthropic  # noqa: PLC0415
 
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     prompt = (
-        "Du klassifizierst ein PDF aus einem Kreuzfahrt-Reisebüro. Antworte AUSSCHLIESSLICH "
+        "Du klassifizierst ein Dokument aus einem Kreuzfahrt-Reisebüro (PDF-Bestätigung "
+        "oder E-Mail an den Kunden). Antworte AUSSCHLIESSLICH "
         "mit einem JSON-Objekt, ohne Markdown, ohne weiteren Text:\n"
         '{"art":"buchung|option|angebot|storno|sonstiges",'
         '"gesamtpreis":<Zahl in EUR, Punkt als Dezimaltrenner, 0 wenn keiner>,'
@@ -104,7 +117,11 @@ def _classify(text: str, subject: str) -> dict:
         "- storno: Stornorechnung / Stornierung / Cancellation Notice.\n"
         "- sonstiges: AGB, Formulare, Einreisebestimmungen, Sicherungsschein, Kreditkartenformular etc.\n"
         "gesamtpreis = Gesamtreisepreis/Gesamtbetrag der gesamten Buchung in EUR "
-        "(nicht Anzahlung, nicht Einzelpreis pro Person).\n"
+        "(nicht Anzahlung, nicht Einzelpreis pro Person). Suche GRÜNDLICH: auch "
+        "'Reisepreis', 'Gesamtbetrag', 'Rechnungsbetrag', 'Total', 'Endpreis' oder die "
+        "Summenzeile einer Preistabelle zählen. Stehen nur Einzelposten (z.B. pro Person "
+        "oder Kabine + Zuschläge), addiere sie zum Gesamtpreis. Nur 0, wenn wirklich "
+        "nirgends ein Betrag im Dokument steht.\n"
         "optionsfrist = nur bei Optionen das 'Option gültig bis'/'Optionsfrist'-Datum.\n\n"
         f"Betreff: {subject}\n\nPDF-Text:\n{text[:8000]}"
     )
@@ -138,46 +155,75 @@ def collect(days: int = 8, top: int = 80) -> dict[str, dict] | None:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     by_vorgang: dict[str, dict] = {}
 
+    def _register(info: dict, vg: str, recv: datetime, subject: str) -> None:
+        if vg in by_vorgang:
+            return  # neueste Bestätigung gewann bereits (Iteration datum-absteigend)
+        by_vorgang[vg] = {"art": info["art"], "value": info["value"],
+                          "date": recv.date().isoformat(),
+                          "nachname": info.get("nachname", ""),
+                          "optionsfrist": info.get("optionsfrist", ""),
+                          # Label aus Dokument (Schiff+Route), Betreff nur als Fallback
+                          "label": info.get("reise") or _clean_subject(subject) or vg}
+
+    _EMPTY = {"art": "sonstiges", "value": 0.0, "vorgang": "",
+              "nachname": "", "optionsfrist": "", "reise": ""}
+
     for folder in FOLDERS:
-        for m in graph.messages(folder, top=top):
-            if not m.get("hasAttachments"):
-                continue
+        for m in graph.messages(folder, top=top,
+                                select="subject,receivedDateTime,hasAttachments,bodyPreview"):
             recv = datetime.fromisoformat(m["receivedDateTime"].replace("Z", "+00:00"))
             if recv < cutoff:
                 break  # Liste ist nach Datum absteigend
             subject = m.get("subject", "")
-            for a in graph.attachments(m["id"]):
-                name = a.get("name", "")
-                if not name.lower().endswith(".pdf"):
-                    continue
-                if SKIP_PDF.search(name) or ANGEBOT_PDF.search(name):
-                    continue  # Boilerplate/Angebot: nicht an Claude
-                try:
-                    raw = graph.attachment_bytes(m["id"], a["id"])
-                except Exception:  # noqa: BLE001
-                    continue
-                key = hashlib.md5(raw).hexdigest()
-                if key in cache:
-                    info = cache[key]
-                else:
+            got_vorgang = False   # hat diese Mail schon einen Treffer über ein PDF geliefert?
+            if m.get("hasAttachments"):
+                for a in graph.attachments(m["id"]):
+                    name = a.get("name", "")
+                    if not name.lower().endswith(".pdf"):
+                        continue
+                    if SKIP_PDF.search(name) or ANGEBOT_PDF.search(name):
+                        continue  # Boilerplate/Angebot: nicht an Claude
                     try:
-                        info = _classify(_pdf_text(raw), subject)
+                        raw = graph.attachment_bytes(m["id"], a["id"])
                     except Exception:  # noqa: BLE001
-                        info = {"art": "sonstiges", "value": 0.0, "vorgang": "",
-                                "nachname": "", "optionsfrist": "", "reise": ""}
-                    cache[key] = info
-                    changed = True
-                if info["art"] not in ("buchung", "option", "storno"):
-                    continue
-                vg = info.get("vorgang") or _vorgang(name, subject) or key
-                if vg in by_vorgang:
-                    continue  # neueste Bestätigung gewann bereits (Iteration datum-absteigend)
-                by_vorgang[vg] = {"art": info["art"], "value": info["value"],
-                                  "date": recv.date().isoformat(),
-                                  "nachname": info.get("nachname", ""),
-                                  "optionsfrist": info.get("optionsfrist", ""),
-                                  # Label aus PDF (Schiff+Route), Betreff nur als Fallback
-                                  "label": info.get("reise") or _clean_subject(subject) or vg}
+                        continue
+                    key = hashlib.md5(raw).hexdigest()
+                    if key in cache:
+                        info = cache[key]
+                    else:
+                        try:
+                            info = _classify(_pdf_text(raw), subject)
+                        except Exception:  # noqa: BLE001
+                            info = dict(_EMPTY)
+                        cache[key] = info
+                        changed = True
+                    if info["art"] not in ("buchung", "option", "storno"):
+                        continue
+                    got_vorgang = True
+                    _register(info, info.get("vorgang") or _vorgang(name, subject) or key,
+                              recv, subject)
+
+            # Bestätigung nur im MAIL-TEXT (kein verwertbares PDF): z.B. „vielen Dank
+            # für Ihre Optionsbuchung!" – sonst fehlen diese Vorgänge komplett im Ledger.
+            if not got_vorgang and TEXT_MARKER.search(f"{subject} {m.get('bodyPreview', '')}"):
+                try:
+                    text = _html_text(graph.message_body(m["id"]))
+                except Exception:  # noqa: BLE001
+                    text = ""
+                if len(text) >= 40:
+                    key = "mail:" + hashlib.md5(text.encode("utf-8")).hexdigest()
+                    if key in cache:
+                        info = cache[key]
+                    else:
+                        try:
+                            info = _classify(text, subject)
+                        except Exception:  # noqa: BLE001
+                            info = dict(_EMPTY)
+                        cache[key] = info
+                        changed = True
+                    if info["art"] in ("buchung", "option", "storno"):
+                        _register(info, info.get("vorgang") or _vorgang(subject) or key,
+                                  recv, subject)
 
     if changed:
         _save_cache(cache)

@@ -201,6 +201,7 @@ st.markdown(
         color:#fff; min-width:66px; text-align:center; letter-spacing:.02em; }
     .b-buchung { background:#1B1B6D; }
     .b-option  { background:#D6D4F2; color:#1B1B6D; }
+    .b-anfrage { background:#fff; color:#5a5a86; border:1px dashed #b9b7e0; }
     .bk-val { font-weight:700; color:#1B1B6D; min-width:100px; }
     .bk-name { font-weight:700; color:#1B1B6D; min-width:118px; }
     .bk-label { color:#5a5a86; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -241,13 +242,25 @@ _LOGO_WHITE = _logo("m-white.svg")
 
 # ===================== Datenladen (unverändert) =====================
 def _compute_all():
-    """Live-Berechnung aller Connectoren (langsam) – inkl. Excel-Refresh aus Drive."""
+    """Live-Berechnung aller Connectoren (langsam) – inkl. Excel-Refresh aus Drive.
+
+    State-Sync: vorher den Drive-Stand (Ledger/Caches/Historie) in die lokalen
+    Dateien mergen – wichtig für die Cloud (startet ohne data/) und gegen das
+    Auseinanderlaufen von Mac und Cloud. Danach den vereinten Stand hochladen.
+    Fehlgeschlagene Connectoren behalten ihr letztes OK-Ergebnis aus dem Snapshot.
+    """
     from connectors import drive
     try:
+        drive.sync_state_down()
         drive.refresh_festbuchungen(max_age_hours=12)
     except Exception:  # noqa: BLE001
         pass
-    return [fetch() for fetch in ALL_CONNECTORS]
+    results = snapshot.merge_with_previous([fetch() for fetch in ALL_CONNECTORS])
+    try:
+        drive.sync_state_up()
+    except Exception:  # noqa: BLE001
+        pass
+    return results
 
 
 @st.cache_data(ttl=600, show_spinner="🚢 Daily Morr lädt …")
@@ -485,14 +498,17 @@ def _social_html(metrics):
     return '<div class="mm-soc-row">' + "".join(cards) + "</div>"
 
 
-def _booking_list(items):
+def _booking_list(items, max_groups: int = 20):
     # Alles zu EINER Person bündeln: mehrere Vorgänge desselben Nachnamens (am selben
     # Tag) werden zu einer Zeile – Werte summiert, Reisen gebündelt. Eine feste Buchung
     # sticht die Option. Einträge ohne Namen bleiben einzeln stehen.
     grouped: list[list[dict]] = []
     index: dict[str, list[dict]] = {}
-    for it in items[:60]:
-        key = (it.get("nachname") or "").strip().lower()
+    for it in items[:120]:
+        # Schlüssel = letztes Wort = Nachname („Wolfgang Wolk" aus einer Anfrage
+        # bündelt so mit „Wolk" aus dem Vorgangs-Ledger)
+        key = (it.get("nachname") or "").strip().lower().split()[-1:]
+        key = key[0] if key else ""
         if key and key in index:
             index[key].append(it)
         else:
@@ -502,14 +518,24 @@ def _booking_list(items):
                 index[key] = g
 
     rows = []
-    for g in grouped[:20]:
-        opt = all(x.get("art") == "option" for x in g)
-        badge = "Option" if opt else "Buchung"
-        cls = "b-option" if opt else "b-buchung"
+    for g in grouped[:max_groups]:
+        arts = {x.get("art") for x in g}
+        if "buchung" in arts:
+            badge, cls = "Buchung", "b-buchung"
+        elif "option" in arts:
+            badge, cls = "Option", "b-option"
+        else:
+            badge, cls = "Anfrage", "b-anfrage"
         total = sum(x.get("value", 0) or 0 for x in g)
+        # 0 € heißt fast immer: Preis im PDF nicht erkannt – ehrlich beschriften
+        # statt eine 0-€-Buchung zu behaupten. Anfragen (Leads) haben nie einen Wert.
+        if total:
+            val_txt = _euro(total)
+        else:
+            val_txt = "–" if badge == "Anfrage" else "Preis offen"
         iso = max((x.get("date", "") for x in g), default="")
         tag = f"{iso[8:10]}.{iso[5:7]}." if len(iso) >= 10 else ""
-        name = esc(g[0].get("nachname", "") or "")
+        name = esc(next((x.get("nachname") for x in g if x.get("nachname")), "") or "")
         name_html = f'<span class="bk-name">{name}</span>' if name else ""
         labels = list(dict.fromkeys(x.get("label", "") for x in g if x.get("label")))
         label_txt = " · ".join(labels)
@@ -518,7 +544,7 @@ def _booking_list(items):
             label_txt = f"{n} · {label_txt}" if label_txt else n
         rows.append(
             f'<div class="bk-row"><span class="bk-badge {cls}">{badge}</span>'
-            f'<span class="bk-val">{_euro(total)}</span>'
+            f'<span class="bk-val">{esc(val_txt)}</span>'
             f'{name_html}'
             f'<span class="bk-label">{esc(label_txt)}</span>'
             f'<span class="bk-date">{tag}</span></div>')
@@ -554,11 +580,22 @@ def _activity_list(items):
             if nk:
                 by_name[nk] = g
 
+    def _name_rank(n):
+        """Voller Name mit Vorname (3) > Anrede/Einzelwort (2) > Adresse (1)."""
+        if not n:
+            return 0
+        if "@" in n:
+            return 1
+        parts = n.split()
+        anrede = parts[0].lower().rstrip(".") in ("frau", "herr", "familie", "fam", "hr", "fr")
+        return 3 if (len(parts) >= 2 and not anrede) else 2
+
     rows = []
     for g in merged:
-        kontakt = next((x.get("kontakt") for x in g
-                        if x.get("kontakt") and "@" not in x.get("kontakt")),
-                       g[0].get("kontakt", "")) or ""
+        # Anzeigename: bester verfügbarer Kandidat der Gruppe – „Erika Musterfrau"
+        # schlägt „Frau Musterfrau" schlägt „erika@…" (KI-Name vor Absendername).
+        cands = [x.get("name") for x in g] + [x.get("kontakt") for x in g]
+        kontakt = max((c for c in cands if c), key=_name_rank, default="")
         ins = [x for x in g if x.get("direction") != "out"]
         outs = [x for x in g if x.get("direction") == "out"]
         answered = bool(outs)
@@ -566,8 +603,10 @@ def _activity_list(items):
         cls = "act-out" if answered else ("act-problem" if problem else "")
         lead = "✅ " if answered else ("⚠️ " if problem else "")
         flag = '<span class="act-flag">beantwortet</span>' if answered else ""
-        iso = max((x.get("date", "") for x in g), default="")
+        iso, hhmm = max(((x.get("date", ""), x.get("time", "")) for x in g), default=("", ""))
         tag = f"{iso[8:10]}.{iso[5:7]}." if len(iso) >= 10 else ""
+        if tag and hhmm:
+            tag += f" · {hhmm}"   # letzte Aktivität des Tages
         betreff = (ins[0].get("betreff") if ins else g[0].get("betreff", "")) or ""
         lines = [esc(x.get("text", "")) for x in ins if x.get("text")]
         lines += ['<span class="act-reply">↗️ Antwort:</span> ' + esc(x.get("text", ""))
@@ -647,7 +686,8 @@ def _heute_html():
         parts.append(_growth_html(gsec["metrics"]))
     tsec = _section(hero, "Tageseinnahmen")
     if tsec and tsec.get("metrics"):
-        parts.append(_label_html("💶 Tageseinnahmen") + _grid_html(tsec["metrics"], 4))
+        n = len(tsec["metrics"])
+        parts.append(_label_html("💶 Tageseinnahmen") + _grid_html(tsec["metrics"], 5 if n >= 5 else 4))
     return "".join(parts)
 
 
@@ -670,17 +710,33 @@ def _vorgaenge_html():
         return ("Heute" if i == 0 else "Gestern" if i == 1
                 else f"{_WD[d.weekday()]} {d.strftime('%d.%m.')}")
 
-    pills = "".join(
+    # „Woche" = alle 7 Tage auf einmal (komplette Kontrolle statt Tages-Häppchen)
+    pills = (f'<a class="mm-pill{" active" if sel == "woche" else ""}" '
+             f'href="{_url(nav="vorgaenge", day="woche")}">📆 Woche</a>')
+    pills += "".join(
         f'<a class="mm-pill{" active" if d.isoformat() == sel else ""}" '
         f'href="{_url(nav="vorgaenge", day=d.isoformat())}">{esc(_day_label(d))}</a>'
         for d in day_opts)
     parts.append(f'<div class="mm-pills">{pills}</div>')
 
-    day_items = [it for it in bookings if it.get("date") == sel]
-    if day_items:
-        parts.append(_booking_list(day_items))
+    week_iso = {d.isoformat() for d in day_opts}
+    if sel == "woche":
+        day_items = [it for it in bookings if it.get("date") in week_iso]
+        day_act = [a for a in activity if a.get("date") in week_iso]
+    else:
+        day_items = [it for it in bookings if it.get("date") == sel]
+        day_act = [a for a in activity if a.get("date") == sel]
+
+    # Anfragen (Leads) aus dem Postfach in die Vorgangsliste aufnehmen: gleiche
+    # Person (Nachname) wird mit bestehender Option/Buchung gebündelt.
+    leads = [{"art": "anfrage", "value": 0, "date": a.get("date", ""),
+              "nachname": a.get("name") or a.get("kontakt", ""),
+              "label": (a.get("betreff") or a.get("text", ""))[:70]}
+             for a in day_act if a.get("anfrage")]
+    if day_items or leads:
+        parts.append(_booking_list(day_items + leads,
+                                   max_groups=60 if sel == "woche" else 20))
     parts.append(_label_html("🗒️ Postfach-Aktivität"))
-    day_act = [a for a in activity if a.get("date") == sel]
     parts.append(_activity_list(day_act) if day_act else '<div class="mm-empty">Keine Aktivität.</div>')
     return "".join(parts)
 

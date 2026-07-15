@@ -81,6 +81,16 @@ def messages(folder_name: str, top: int = 50,
     return r.json().get("value", [])
 
 
+def message_body(msg_id: str) -> str:
+    """Voller Body (HTML oder Text) einer einzelnen Nachricht."""
+    import requests  # noqa: PLC0415
+
+    r = requests.get(f"{_base()}/messages/{msg_id}?$select=body",
+                     headers=_headers(), timeout=30)
+    r.raise_for_status()
+    return ((r.json().get("body") or {}).get("content", "")) or ""
+
+
 def attachments(msg_id: str) -> list[dict]:
     import requests  # noqa: PLC0415
 

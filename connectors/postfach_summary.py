@@ -2,10 +2,14 @@
 
 Fasst die jüngste eingehende Kunden-Mail je Konversation in MAX 3 Sätzen zusammen,
 fokussiert auf Stand und vor allem Probleme/offene Aufgaben – damit Matthias auf einen
-Blick sieht, wo Handlungsbedarf ist.
+Blick sieht, wo Handlungsbedarf ist. Zusätzlich extrahiert die KI den KUNDENNAMEN
+(Anzeigename ist oft generisch, z.B. 'morr.de' beim Website-Formular) und markiert
+ANFRAGEN (= Leads: jemand möchte eine Reise/Beratung, hat aber noch keinen Vorgang).
 
 Claude (Haiku), Cache je Konversation + letzter Nachricht: unveränderte Threads werden
-nicht erneut zusammengefasst (Token-Kosten minimal).
+nicht erneut zusammengefasst (Token-Kosten minimal). Grundlage ist der volle Mail-Text
+(body, HTML-bereinigt) – bodyPreview (255 Zeichen) war für brauchbare
+Zusammenfassungen zu kurz.
 """
 from __future__ import annotations
 
@@ -23,7 +27,7 @@ SENT_FOLDER = "Gesendete Elemente"                          # ausgehende Antwort
 DAYS = 7
 MAX_ITEMS = 80
 _SELECT = ("subject,from,toRecipients,receivedDateTime,sentDateTime,"
-           "bodyPreview,conversationId")
+           "bodyPreview,body,conversationId")
 # Automatische System-/Benachrichtigungs-Absender (kein echter Kunden-Vorgang) – rausfiltern
 SKIP_SENDERS = re.compile(r"no-?reply|no_reply|donotreply|mailer-daemon|xmlteam|msc-booking", re.I)
 
@@ -58,6 +62,38 @@ def _recipient(m: dict) -> tuple[str, str]:
     return ea.get("name") or ea.get("address", ""), ea.get("address", "")
 
 
+def _body_text(m: dict) -> str:
+    """Voller Mail-Text (HTML-bereinigt); Fallback bodyPreview."""
+    content = (m.get("body") or {}).get("content", "") or ""
+    if content:
+        content = re.sub(r"<(style|script)[^>]*>.*?</\1>", " ", content, flags=re.S | re.I)
+        content = re.sub(r"<[^>]+>", " ", content)
+        content = (content.replace("&nbsp;", " ").replace("&amp;", "&")
+                          .replace("&gt;", ">").replace("&lt;", "<").replace("&euro;", "€"))
+        content = re.sub(r"\s+", " ", content).strip()
+    return content or (m.get("bodyPreview", "") or "")
+
+
+def _generic_name(who: str) -> bool:
+    """Anzeigename ist kein echter Personenname (Adresse, Domain, Formular-Absender)."""
+    w = (who or "").strip()
+    if not w or "@" in w:
+        return True
+    if re.fullmatch(r"[\w-]+(\.[\w-]+)+", w):   # domain-artig, z.B. 'morr.de'
+        return True
+    return w.lower() in ("website", "kontaktformular", "kontakt", "info", "buchung")
+
+
+_ANREDE = ("frau", "herr", "familie", "fam.", "hr.", "fr.")
+
+
+def _full_name(n: str) -> bool:
+    """Echter voller Name (mit Vornamen): ≥2 Wörter, beginnt nicht mit einer Anrede."""
+    parts = (n or "").split()
+    return len(parts) >= 2 and parts[0].lower().rstrip(".") not in (
+        a.rstrip(".") for a in _ANREDE) and not _generic_name(n)
+
+
 def _summarize(subject: str, who: str, preview: str, outgoing: bool = False) -> dict:
     import anthropic  # noqa: PLC0415
 
@@ -67,34 +103,47 @@ def _summarize(subject: str, who: str, preview: str, outgoing: bool = False) -> 
             "Hier ist eine GESENDETE Antwort eines Kreuzfahrt-Reisebüros an einen Kunden. "
             "Fasse in MAXIMAL 2 kurzen deutschen Sätzen zusammen, was dem Kunden mitgeteilt "
             "oder zugesagt wurde. Antworte NUR als JSON, ohne weiteren Text:\n"
-            '{"zusammenfassung":"<max. 2 Sätze>"}\n'
+            '{"zusammenfassung":"<max. 2 Sätze>",'
+            '"name":"<VOR- und Nachname des Kunden, z.B. \\"Erika Musterfrau\\" – suche im '
+            'GESAMTEN Text (zitierte Kunden-Mail, Signatur, Anrede). Nur wenn nirgends ein '
+            'Vorname steht: Anrede + Nachname (z.B. \\"Frau Baumann\\"); leer wenn unklar>"}\n'
             "Der Text kann technisch abgeschnitten sein – erwähne das NICHT.\n\n"
-            f"Empfänger: {who}\nBetreff: {subject}\nText: {preview[:1500]}"
+            f"Empfänger: {who}\nBetreff: {subject}\nText: {preview[:1800]}"
         )
     else:
         prompt = (
             "Hier ist die jüngste E-Mail aus dem Buchungspostfach eines Kreuzfahrt-Reisebüros. "
             "Fasse den Vorgang in MAXIMAL 3 kurzen deutschen Sätzen zusammen – Fokus auf Stand "
             "und vor allem Probleme oder offene Aufgaben. Antworte NUR als JSON, ohne weiteren Text:\n"
-            '{"zusammenfassung":"<max. 3 Sätze>","problem":true|false}\n'
+            '{"zusammenfassung":"<max. 3 Sätze>","problem":true|false,'
+            '"name":"<VOR- und Nachname des Kunden, z.B. \\"Erika Musterfrau\\" – suche im '
+            'GESAMTEN Text (Signatur, Formularfelder, Anrede, zitierte Mail). Nur wenn nirgends '
+            'ein Vorname steht: Anrede + Nachname (z.B. \\"Frau Baumann\\"); leer wenn unklar>",'
+            '"anfrage":true|false}\n'
             "problem=true nur bei echtem Handlungsbedarf (Beschwerde, Zahlungsproblem, Stornowunsch, "
             "dringende/offene Frage, Fehler). Sonst false.\n"
+            "anfrage=true, wenn ein Kunde eine NEUE Reise-/Buchungs-/Beratungsanfrage stellt "
+            "(Lead: möchte Angebot, Verfügbarkeit, Kabine, Preis – noch keine bestehende Buchung). "
+            "Reine Rückfragen zu bestehenden Buchungen, Reederei-Systemmails, Newsletter: false.\n"
             "Der Text kann technisch abgeschnitten sein – erwähne das NICHT, fasse nur den "
             "erkennbaren Inhalt zusammen.\n\n"
-            f"Absender: {who}\nBetreff: {subject}\nText: {preview[:1500]}"
+            f"Absender: {who}\nBetreff: {subject}\nText: {preview[:1800]}"
         )
-    r = client.messages.create(model=MODEL, max_tokens=200, temperature=0,
+    r = client.messages.create(model=MODEL, max_tokens=250, temperature=0,
                                messages=[{"role": "user", "content": prompt}])
     text, problem = preview[:160], False
+    name, anfrage = "", False
     m = re.search(r"\{.*\}", r.content[0].text, re.S)
     if m:
         try:
             d = json.loads(m.group())
             text = str(d.get("zusammenfassung", text)).strip()
             problem = bool(d.get("problem", False)) and not outgoing
+            name = str(d.get("name", "")).strip()
+            anfrage = bool(d.get("anfrage", False)) and not outgoing
         except (ValueError, TypeError):
             pass
-    return {"zusammenfassung": text, "problem": problem}
+    return {"zusammenfassung": text, "problem": problem, "name": name, "anfrage": anfrage}
 
 
 def summaries() -> list[dict] | None:
@@ -137,14 +186,15 @@ def summaries() -> list[dict] | None:
     out: list[dict] = []
     for m, direction in chosen:
         cid = m.get("conversationId") or m["id"]
-        # Eingehende Cache-Keys bleiben wie bisher (Bestand erhalten); ausgehende mit ":out"
-        key = f"{cid}:{m['receivedDateTime']}" + (":out" if direction == "out" else "")
+        # ":v3"/":out3": erzwingt EINMALIGE Neu-Zusammenfassung bei Prompt-Änderung
+        # (aktuell: Namens-Extraktion MIT Vornamen aus dem gesamten Text).
+        key = f"{cid}:{m['receivedDateTime']}" + (":out3" if direction == "out" else ":v3")
         who = _recipient(m)[0] if direction == "out" else _sender(m)
         if key in cache:
             info = cache[key]
         else:
             try:
-                info = _summarize(m.get("subject", ""), who, m.get("bodyPreview", ""),
+                info = _summarize(m.get("subject", ""), who, _body_text(m),
                                   outgoing=(direction == "out"))
             except Exception:  # noqa: BLE001
                 info = {"zusammenfassung": (m.get("bodyPreview", "") or "")[:150], "problem": False}
@@ -152,11 +202,37 @@ def summaries() -> list[dict] | None:
             changed = True
         stamp = (m.get("sentDateTime") if direction == "out" else m["receivedDateTime"]) or m["receivedDateTime"]
         when = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone()
-        out.append({"kontakt": who, "betreff": m.get("subject", ""),
+        name = str(info.get("name", "") or "").strip()
+        addr = (_recipient(m)[1] if direction == "out" else _addr(m)).lower()
+        # Anzeige: echter Kundenname schlägt generische Absender/Empfänger
+        # ('morr.de' beim Website-Formular, nackte Adressen)
+        kontakt = name if (name and _generic_name(who)) else (who or name)
+        out.append({"kontakt": kontakt, "name": name, "addr": addr,
+                    "betreff": m.get("subject", ""),
                     "text": info.get("zusammenfassung", ""),
                     "problem": bool(info.get("problem")) and direction == "in",
+                    "anfrage": bool(info.get("anfrage")) and direction == "in",
                     "direction": direction, "date": when.date().isoformat(),
+                    "time": when.strftime("%H:%M"),
                     "cid": cid})   # Konversation: bündelt eingehend + gesendete Antwort
+
+    # Namens-Verzeichnis Adresse -> bester voller Name (MIT Vorname): kennt IRGENDEINE
+    # Mail der Person den vollen Namen (Signatur, Absendername), erben ihn alle ihre
+    # Einträge – statt „Frau Baumann" hier und Adresse dort.
+    best: dict[str, str] = {}
+    for it in out:
+        if it["addr"] and not best.get(it["addr"]):
+            for cand in (it.get("name", ""), it.get("kontakt", "")):
+                if _full_name(cand):
+                    best[it["addr"]] = cand
+                    break
+    for it in out:
+        b = best.get(it["addr"])
+        if b:
+            if not _full_name(it.get("name", "")):
+                it["name"] = b
+            if not _full_name(it.get("kontakt", "")):
+                it["kontakt"] = b
 
     if changed:
         _save_cache(cache)

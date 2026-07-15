@@ -184,17 +184,25 @@ def compute(df: pd.DataFrame, today: date | None = None) -> ConnectorResult:
     if latest:
         caption += f" · Export-Stand: jüngste Buchung {latest.strftime('%d.%m.%Y')}"
 
+    # Export-Stand (= jüngstes Buchungsdatum der Excel) sichtbar an die Kacheln:
+    # bis zu diesem Tag sind die Zahlen vollständig, danach fehlt der nächste Export.
+    stand_chip = f"bis {latest.strftime('%d.%m.')}" if latest else None
+    stand_txt = f" Export-Stand: {latest.strftime('%d.%m.%Y')}." if latest else ""
     return ConnectorResult(
         name=NAME,
         category=CAT,
         metrics=[
             Metric(f"Volumen {monat_label}", _euro(last_vol),
-                   help=f"Summe 'Preis KD' der {last_cnt} OK-Buchungen im {_MONATE[last_ym[1]]} {last_ym[0]}."),
+                   delta=stand_chip, delta_color="off",
+                   help=f"Summe 'Preis KD' der {last_cnt} OK-Buchungen im "
+                        f"{_MONATE[last_ym[1]]} {last_ym[0]}.{stand_txt}"),
             Metric(f"Provision ~{rate_str} %", _euro(last_vol * rate),
+                   delta=stand_chip, delta_color="off",
                    help=f"Geschätzt: Volumen {monat_label} × {rate_str} % "
-                        f"(ab 01.07.2026 gilt 7,5 %)."),
+                        f"(ab 01.07.2026 gilt 7,5 %).{stand_txt}"),
             Metric(f"Volumen {today.year} (YTD)", _euro(ytd_vol),
-                   help=f"Kumuliertes Buchungsvolumen {today.year}, {ytd_cnt} Buchungen."),
+                   delta=stand_chip, delta_color="off",
+                   help=f"Kumuliertes Buchungsvolumen {today.year}, {ytd_cnt} Buchungen.{stand_txt}"),
         ],
         caption=caption,
     )

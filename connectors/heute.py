@@ -14,7 +14,7 @@ from datetime import date, timedelta
 
 import requests
 
-from . import (digistore, graph, kit, kreuzfahrtstudio, landausfluege, lexware,
+from . import (aida_pvn, digistore, graph, kit, kreuzfahrtstudio, landausfluege, lexware,
                lexware_income, ledger, postfach_summary, social, youtube, youtube_revenue)
 from .base import Category, ConnectorResult, Metric
 
@@ -85,6 +85,7 @@ def fetch() -> ConnectorResult:
     yt_stats = _safe(youtube.channel_stats)
     postfach = _safe(postfach_summary.summaries) if graph.configured() else None
     lex = _safe(lexware_income.summary) if lexware.configured() else None
+    pvn = _safe(aida_pvn.summary) if aida_pvn.configured() else None
     kt = _safe(_kit_today, today)
     _eur = digistore._euro
 
@@ -123,19 +124,27 @@ def fetch() -> ConnectorResult:
     festwert_heute_h, n_fest_heute_h = _festwert(today, today), _festcount(today, today)
     festwert_monat_h, n_fest_monat_h = _festwert(month_start, today), _festcount(month_start, today)
 
-    def _erfolg(fest_prov, land_prov, d_digi, d_awin, yt_val):
-        return (fest_prov or 0) + (land_prov or 0) + (d_digi or 0) + (d_awin or 0) + (yt_val or 0)
+    def _erfolg(fest_prov, land_prov, d_digi, d_awin, d_pvn, yt_val):
+        return ((fest_prov or 0) + (land_prov or 0) + (d_digi or 0) + (d_awin or 0)
+                + (d_pvn or 0) + (yt_val or 0))
 
     yt_day = yt["typical_day"] if yt else 0.0   # tagesweise: Median (3 T. Verzug)
+    # AIDA PVN = Affiliate wie Awin (AIDA lief bis Mitte 2026 über Awin und zählte
+    # dort in den Erfolg). NICHT die Newsletter-Werbung – die ist die „AIDA"-Rechnung
+    # in Lexware, ein separater Einnahmestrom.
     e_heute = _erfolg(_festprov(today, today),
-                      land["today_prov"] if land else 0.0, digi_h, awin_h, yt_day)
+                      land["today_prov"] if land else 0.0, digi_h, awin_h,
+                      pvn["today_prov"] if pvn else 0.0, yt_day)
     e_gestern = _erfolg(_festprov(gestern, gestern),
-                        land["yesterday_prov"] if land else 0.0, digi_g, awin_g, yt_day)
+                        land["yesterday_prov"] if land else 0.0, digi_g, awin_g,
+                        pvn["yesterday_prov"] if pvn else 0.0, yt_day)
     e_7d = _erfolg(_festprov(d7, today), land["prov_7d"] if land else 0.0,
-                   digi_7, awin_7, yt["rev_7d"] if yt else 0.0)   # 7/30 T.: echte YouTube-Umsätze
+                   digi_7, awin_7, pvn["prov_7d"] if pvn else 0.0,
+                   yt["rev_7d"] if yt else 0.0)   # 7/30 T.: echte YouTube-Umsätze
     # Lexware-Einnahmen (fakturiert, monatlich/laggy) NUR ins 30-Tage-Band
     e_30d = _erfolg(_festprov(d30, today), land["prov_30d"] if land else 0.0,
-                    digi_30, awin_30, yt["rev_30d"] if yt else 0.0) + lex_30d
+                    digi_30, awin_30, pvn["prov_30d"] if pvn else 0.0,
+                    yt["rev_30d"] if yt else 0.0) + lex_30d
 
     wt = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
     cap = f"{wt[today.weekday()]}, {today.strftime('%d.%m.%Y')}"
@@ -143,9 +152,9 @@ def fetch() -> ConnectorResult:
     _satz_txt = (f"{_satz_now:.1f} %".replace(".", ",")
                  + ("" if today >= kreuzfahrtstudio.PROVISION_AB else " (ab 01.07. 7,5 %)"))
     erfolg_help = (f"Einnahmen = Festbuchungs-Provision ({_satz_txt}) + Landausflüge + Digistore + "
-                   "Awin + YouTube. Im 30-Tage-Band zusätzlich die fakturierten Einnahmen aus Lexware "
-                   "(AIDA, Sponsoren, Amazon, Meta …). Festbuchungen aus der Kreuzfahrtstudio-Excel. "
-                   "Optionen = PIPELINE, nicht enthalten.")
+                   "Awin + AIDA-Affiliate (PVN) + YouTube. Im 30-Tage-Band zusätzlich die fakturierten "
+                   "Einnahmen aus Lexware (AIDA-Newsletter-Werbung, Sponsoren, Amazon, Meta …). "
+                   "Festbuchungen aus der Kreuzfahrtstudio-Excel. Optionen = PIPELINE, nicht enthalten.")
     bands = [
         {"label": "🎯 Erfolg heute", "value": _eur(e_heute), "sub": cap,
          "help": erfolg_help, "variant": ""},
@@ -188,6 +197,16 @@ def fetch() -> ConnectorResult:
         buchungen.append(Metric("Pipeline offen", _eur(led["pipeline_value"]),
                                 delta=f"{led['pipeline_count']} offene Optionen", delta_color="off",
                                 help="Gesamtwert aller offenen Optionen – potenziell, NICHT als Einnahme gezählt."))
+    if postfach is not None:
+        # Leads: eingehende Kundenanfragen ohne Vorgang (KI-erkannt aus dem Postfach)
+        n_lead_heute = sum(1 for a in postfach
+                           if a.get("anfrage") and a.get("date") == today.isoformat())
+        n_lead_7d = sum(1 for a in postfach if a.get("anfrage"))
+        buchungen.append(Metric("Anfragen heute", n_lead_heute,
+                                delta=f"{n_lead_7d} in 7 Tagen", delta_color="off",
+                                help="Neue Kundenanfragen (Leads) aus dem buchung@-Postfach – "
+                                     "KI-erkannt. Noch kein Vorgang, aber potenzielle Buchung; "
+                                     "erscheinen in der Vorgangsliste als »Anfrage«."))
 
     # BEREICH 2 „Tageseinnahmen" (live, pro Tag): YouTube · Landausflüge · Awin · DigiStore24
     tageseinnahmen: list[Metric] = []
@@ -200,6 +219,13 @@ def fetch() -> ConnectorResult:
             "Meine Landausflüge", _eur(land["today_prov"]),
             delta=f"Gestern {_eur(land['yesterday_prov'])} · Vorgestern {_eur(land['vorgestern_prov'])}",
             delta_color="off", help="Provision (10 %) heute, netto nach Stornos. Darunter Vortage."))
+    if pvn is not None:
+        tageseinnahmen.append(Metric(
+            "AIDA Affiliate", _eur(pvn["today_prov"]),
+            delta=f"Monat: {_eur(pvn['month_prov'])}", delta_color="off",
+            help="AIDA-PVN-Provision heute (bestätigt + offen) · Monat = laufender Monat. "
+                 "Fließt wie Awin in den Erfolg ein. Eigenes Partnernetzwerk – hat nichts "
+                 "mit der AIDA-Newsletter-Rechnung (Lexware) zu tun."))
     tageseinnahmen.append(Metric("DigiStore24", _eur(digi_h) if digi_h is not None else "–",
                                  delta=(f"Monat: {_eur(digi_m)}" if digi_m is not None else None),
                                  delta_color="off", help="Digistore24 verdient heute · Monat = laufender Monat."))
@@ -211,7 +237,11 @@ def fetch() -> ConnectorResult:
     einnahmen: list[Metric] = []
     if lex is not None:
         for label, netto in lex["by_source"].items():
-            einnahmen.append(Metric(label, _eur(netto), help="Fakturiert (netto), letzte 30 Tage – Lexware."))
+            d = (lex.get("last_date") or {}).get(label, "")
+            chip = f"zuletzt {d[8:10]}.{d[5:7]}." if len(d) >= 10 else None
+            einnahmen.append(Metric(label, _eur(netto), delta=chip, delta_color="off",
+                                    help="Fakturiert (netto), letzte 30 Tage – Lexware. "
+                                         f"Jüngster Beleg: {d or '–'}."))
         if not einnahmen:
             einnahmen.append(Metric("Fakturiert (30 T.)", _eur(0),
                                     help="Noch keine fakturierten Einnahmen im Fenster."))
@@ -225,17 +255,24 @@ def fetch() -> ConnectorResult:
         wachstum.append(Metric("Morrletter", f"+{new}", delta=net,
                                help="Newsletter: neue Abos heute · Delta = netto nach Abmeldungen."))
     # YouTube: exakte Abozahl via Analytics API (Data API rundet auf 3 sig. Stellen).
-    # Fallback auf die gerundete Data-API-Zahl, falls das OAuth-Token klemmt.
+    # Fallback 1: gerundete Data-API-Zahl. Fallback 2: letzter bekannter Stand aus
+    # der Historie (lieber gestriger Wert mit Datum als ein Strich).
     yt_subs = _safe(youtube_revenue.subscribers_exact)
     yt_exact = yt_subs is not None
     if yt_subs is None and yt_stats:
         yt_subs = yt_stats["subs"]
+    yt_delta = social.record_and_delta("youtube", yt_subs) if yt_exact else None
+    yt_help = ("Abonnenten – exakt via Analytics API (gewonnen − verloren)." if yt_exact
+               else "Abonnenten (gerundet, Data API – Analytics-Token prüfen).")
+    if yt_subs is None:
+        _val, _delta, _stand = social.last_known("youtube")
+        if _val is not None:
+            yt_subs, yt_delta = _val, _delta
+            yt_help = (f"Live-Abruf fehlgeschlagen – letzter bekannter Stand vom "
+                       f"{_stand[8:10]}.{_stand[5:7]}.")
     wachstum.append(
         Metric("YouTube", _num(yt_subs) if yt_subs is not None else "–",
-               delta=social.record_and_delta("youtube", yt_subs) if yt_exact else None,
-               delta_color="off",
-               help="Abonnenten – exakt via Analytics API (gewonnen − verloren)." if yt_exact
-                    else "Abonnenten (gerundet, Data API – Analytics-Token prüfen)."))
+               delta=yt_delta, delta_color="off", help=yt_help))
     wachstum += social.account_metrics()
 
     if not buchungen and not tageseinnahmen:

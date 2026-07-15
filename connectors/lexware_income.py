@@ -23,8 +23,10 @@ WINDOW_DAYS = 30
 # Lexware übernehmen (Nutzer rechnet später selbst um); zum Umrechnen LEXWARE_USD_TO_EUR setzen.
 USD_SOURCES = {"Meta", "Spotify"}
 USD_TO_EUR = float(os.getenv("LEXWARE_USD_TO_EUR", "1.0"))
-# Quellen mit eigenem Live-Connector -> hier ausschließen (kein Doppelzählen)
-EXCLUDE = re.compile(r"google|digistore|\bawin\b|tripup|kreuzfahrtstudio", re.I)
+# Quellen mit eigenem Live-Connector -> hier ausschließen (kein Doppelzählen).
+# easyCustomers/PVN = AIDA-Affiliate-Netzwerk (eigener Connector aida_pvn.py);
+# „AIDA" selbst bleibt DRIN – das ist die Newsletter-Werbe-Rechnung (eigener Strom).
+EXCLUDE = re.compile(r"google|digistore|\bawin\b|tripup|kreuzfahrtstudio|easycustomers|easy-m|\bpvn\b", re.I)
 # Sachwert-/Tausch-Einnahmen (Produkt statt Geld): diese Marken liefern Ware, die als
 # salesinvoice-Warenbeleg in Lexware landet -> kein Geldfluss, raus. ECHTE Rechnungen
 # (voucherType "invoice", z.B. Giesswein RE-…) bleiben. Plattform-Auszahlungen wie
@@ -63,7 +65,10 @@ def _save_cache(cache: dict) -> None:
 
 
 def summary() -> dict | None:
-    """{total_30d, by_source: {label: netto}, since}. None ohne API-Key."""
+    """{total_30d, by_source: {label: netto}, last_date: {label: ISO}, since}. None ohne API-Key.
+
+    last_date = Belegdatum der jüngsten Rechnung je Quelle – für das Datum in der Kachel.
+    """
     if not lexware.configured():
         return None
     today = date.today()
@@ -73,6 +78,7 @@ def summary() -> dict | None:
     cache = _load_cache()
     changed = False
     by_source: dict[str, float] = {}
+    last_date: dict[str, str] = {}
     for v in vouchers:
         name = v.get("contactName", "")
         if EXCLUDE.search(name):
@@ -90,7 +96,11 @@ def summary() -> dict | None:
         if lab in USD_SOURCES:
             net *= USD_TO_EUR   # Meta/Spotify real USD (Standard 1.0 = unverändert)
         by_source[lab] = by_source.get(lab, 0.0) + net
+        vd = str(v.get("voucherDate", ""))[:10]
+        if vd:
+            last_date[lab] = max(last_date.get(lab, ""), vd)
     if changed:
         _save_cache(cache)
     by_source = {k: v for k, v in sorted(by_source.items(), key=lambda x: -x[1])}
-    return {"total_30d": sum(by_source.values()), "by_source": by_source, "since": since}
+    return {"total_30d": sum(by_source.values()), "by_source": by_source,
+            "last_date": last_date, "since": since}

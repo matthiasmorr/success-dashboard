@@ -132,11 +132,36 @@ def record_and_delta(platform: str, value: int | None, today: date | None = None
     return f"{'+' if d >= 0 else ''}{d} seit gestern" if d else "± 0 seit gestern"
 
 
+def last_known(platform: str) -> tuple[int | None, str | None, str | None]:
+    """(letzter Wert, „+X seit gestern", ISO-Datum des Stands) aus der Historie.
+
+    Fallback für API-Ausfälle (offline, Token-Hänger): lieber der letzte bekannte
+    Stand mit Datum als ein nichtssagender Strich.
+    """
+    hist = _load_history()
+    days = sorted(d for d in hist
+                  if isinstance(hist.get(d), dict) and isinstance(hist[d].get(platform), int))
+    if not days:
+        return None, None, None
+    val = hist[days[-1]][platform]
+    delta = None
+    if len(days) >= 2:
+        d = val - hist[days[-2]][platform]
+        delta = f"{'+' if d >= 0 else ''}{d} seit gestern" if d else "± 0 seit gestern"
+    return val, delta, days[-1]
+
+
+def _stand_help(err: str | None, stand: str) -> str:
+    tag = f"{stand[8:10]}.{stand[5:7]}." if len(stand) >= 10 else stand
+    return f"Live-Abruf fehlgeschlagen – letzter bekannter Stand vom {tag} ({err or 'Fehler'})."
+
+
 def account_metrics(today: date | None = None) -> list[Metric]:
     """Drei Kacheln (Instagram · Facebook · TikTok) für den Accountwachstum-Block.
 
     Robust: jede Plattform für sich; fehlt Token oder schlägt der Abruf fehl,
-    zeigt die Kachel „–" mit Hinweis im Tooltip. Bei Erfolg zusätzlich „+X seit gestern".
+    fällt die Kachel auf den letzten bekannten Historien-Stand zurück (mit Datum
+    im Tooltip) – erst ganz ohne Historie zeigt sie „–".
     """
     today = today or date.today()
     iso = today.isoformat()
@@ -172,15 +197,19 @@ def account_metrics(today: date | None = None) -> list[Metric]:
         d = val - prev[key]
         return f"{'+' if d >= 0 else ''}{d} seit gestern" if d else "± 0 seit gestern"
 
+    def _tile(label: str, key: str, val: int | None, err: str | None, help_ok: str) -> Metric:
+        if val is not None:
+            return Metric(label, _fmt(val), delta=_delta(key, val), delta_color="off", help=help_ok)
+        fb_val, fb_delta, stand = last_known(key)
+        if fb_val is not None:
+            return Metric(label, _fmt(fb_val), delta=fb_delta, delta_color="off",
+                          help=_stand_help(err, stand or ""))
+        return Metric(label, "–", help=err or help_ok)
+
     ig_help = (f"Instagram @{ig_user} – Follower." if ig_user
                else (ig_err or "Anbindung einzurichten (Meta Graph API)."))
     return [
-        Metric("Instagram", _fmt(ig) if ig is not None else "–",
-               delta=_delta("instagram", ig), delta_color="off", help=ig_help),
-        Metric("Facebook", _fmt(fb) if fb is not None else "–",
-               delta=_delta("facebook", fb), delta_color="off",
-               help=fb_err or "Facebook-Seite – Follower."),
-        Metric("TikTok", _fmt(tk) if tk is not None else "–",
-               delta=_delta("tiktok", tk), delta_color="off",
-               help=tk_err or "TikTok – Follower."),
+        _tile("Instagram", "instagram", ig, ig_err, ig_help),
+        _tile("Facebook", "facebook", fb, fb_err, "Facebook-Seite – Follower."),
+        _tile("TikTok", "tiktok", tk, tk_err, "TikTok – Follower."),
     ]
