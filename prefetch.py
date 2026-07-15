@@ -27,6 +27,10 @@ def main() -> None:
     # aus Drive in die lokalen mergen: die Cloud startet ohne data/ und würde sonst
     # jedes Mal bei null anfangen – Mac und Cloud liefen auseinander.
     print("Drive-State:", drive.sync_state_down())
+    # In der Cloud (frischer Checkout) fehlt der lokale Snapshot: den letzten fertigen
+    # aus Drive holen, damit merge_with_previous auch dort eine Fallback-Basis hat.
+    if not snapshot.SNAP.exists():
+        print("Drive-Snapshot:", drive.download_snapshot())
     # Excel ggf. frisch aus Drive ziehen, bevor die Connectoren sie lesen
     print("Drive:", drive.refresh_festbuchungen(max_age_hours=12))
     # Fehlgeschlagene Connectoren behalten ihren letzten OK-Stand (Offline-Lauf
