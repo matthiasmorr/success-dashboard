@@ -194,9 +194,14 @@ def fetch() -> ConnectorResult:
         buchungen.append(Metric("Neue Optionen heute", _eur(led["option_value_heute"]),
                                 delta=f"{nopt} Option" + ("" if nopt == 1 else "en"), delta_color="off",
                                 help="Wert heute neu bestätigter Optionen (Pipeline-Zugang, noch keine Einnahme)."))
+        pipe_delta = f"{led['pipeline_count']} offene Optionen"
+        if led.get("pipeline_missing"):
+            pipe_delta += f" · {led['pipeline_missing']}x Preis offen"
         buchungen.append(Metric("Pipeline offen", _eur(led["pipeline_value"]),
-                                delta=f"{led['pipeline_count']} offene Optionen", delta_color="off",
-                                help="Gesamtwert aller offenen Optionen – potenziell, NICHT als Einnahme gezählt."))
+                                delta=pipe_delta, delta_color="off",
+                                help="Gesamtwert aller offenen Optionen – potenziell, NICHT als Einnahme "
+                                     "gezählt. 'Preis offen' = Betrag in keiner Bestätigung erkennbar; "
+                                     "die Summe untertreibt dann."))
     if postfach is not None:
         # Leads: eingehende Kundenanfragen ohne Vorgang (KI-erkannt aus dem Postfach)
         n_lead_heute = sum(1 for a in postfach

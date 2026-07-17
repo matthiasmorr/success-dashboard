@@ -37,26 +37,76 @@ def _save(led: dict) -> None:
         json.dump(led, fh, ensure_ascii=False, indent=1)
 
 
+def _schiff_of(e: dict) -> str:
+    """Schiffsname eines Ledger-Eintrags – Altbestände haben kein 'schiff'-Feld,
+    dort steckt er im Label vor dem Komma ('Mein Schiff 2, Karibik…')."""
+    if e.get("schiff"):
+        return e["schiff"]
+    label = e.get("label") or ""
+    return label.split(",")[0].strip() if "," in label else ""
+
+
+def _find_entry(led: dict, key: str, c: dict, alias_index: dict[str, str],
+                ident_index: dict[str, str], sig_index: dict[str, str]) -> str | None:
+    """Ledger-Schlüssel eines bestehenden Eintrags für diesen Vorgang finden – über
+    Schlüssel, Vorgangs-Alias, Identität (Nachname+Schiff+Abreise) oder als letzte
+    Stufe Nachname+Schiff+exakter Betrag. So finden Option und Festbuchung derselben
+    Reise auch dann zusammen, wenn die Reederei ihnen verschiedene Nummern gegeben
+    hat oder eine Bestätigung kein Abreisedatum trägt."""
+    if key in led:
+        return key
+    if key in alias_index:
+        return alias_index[key]
+    for vg in c.get("vorgaenge") or []:
+        if vg in led:
+            return vg
+        if vg in alias_index:
+            return alias_index[vg]
+    ident = booking_value.identity_key(c.get("nachname"), c.get("schiff"), c.get("abreise"))
+    if ident and ident in ident_index:
+        return ident_index[ident]
+    sig = booking_value.value_sig(c.get("nachname"), c.get("schiff"), c.get("value"))
+    if sig and sig in sig_index:
+        return sig_index[sig]
+    return None
+
+
 def update(days: int = 40, top: int = 200) -> dict | None:
     """Klassifiziert die letzten `days` Tage und mergt in den persistenten Ledger."""
     data = booking_value.collect(days=days, top=top)
     if data is None:
         return None
     led = _load()
-    for vg, c in data.items():
+    alias_index: dict[str, str] = {}
+    ident_index: dict[str, str] = {}
+    sig_index: dict[str, str] = {}
+    for k, e in led.items():
+        for vg in e.get("vorgaenge") or []:
+            alias_index.setdefault(vg, k)
+        ident = booking_value.identity_key(e.get("nachname"), _schiff_of(e), e.get("abreise"))
+        if ident:
+            ident_index.setdefault(ident, k)
+        sig = booking_value.value_sig(e.get("nachname"), _schiff_of(e), e.get("value"))
+        if sig:
+            sig_index.setdefault(sig, k)
+
+    for key, c in data.items():
+        k = _find_entry(led, key, c, alias_index, ident_index, sig_index)
         # Storno: bestehenden Vorgang als storniert markieren (fliegt aus Einnahme/Pipeline)
         if c["art"] == "storno":
-            e = led.get(vg)
-            if e is not None:
-                e["storno_date"] = c["date"]
+            if k is not None:
+                led[k]["storno_date"] = c["date"]
             continue
         state = "festbuchung" if c["art"] == "buchung" else "option"
-        e = led.get(vg)
+        e = led.get(k) if k else None
         if e is None:
+            k = key
             e = {"nachname": c.get("nachname", ""), "label": c.get("label", ""),
                  "value": c["value"], "state": state, "optionsfrist": c.get("optionsfrist") or None,
+                 "schiff": c.get("schiff", ""), "abreise": c.get("abreise", ""),
+                 "vorgaenge": list(c.get("vorgaenge") or ([key] if not key.startswith("mail:") else [])),
                  "option_date": None, "buchung_date": None, "storno_date": None}
-            led[vg] = e
+            led[k] = e
         # Status nur vorwärts; bei Erreichen/Höherstufung Wert+Label aktualisieren.
         # value 0 = Preis im PDF nicht erkannt -> bekannten Wert NICHT überschreiben
         # (sonst wird aus einer 4.620-€-Option eine 0-€-Buchung).
@@ -66,6 +116,22 @@ def update(days: int = 40, top: int = 200) -> dict | None:
                 e["value"] = c["value"]
             e["nachname"] = c.get("nachname") or e["nachname"]
             e["label"] = c.get("label") or e["label"]
+        if not e.get("value") and c.get("value"):
+            e["value"] = c["value"]   # bekannter Preis füllt eine 0 immer
+        for fld in ("schiff", "abreise"):
+            if not e.get(fld) and c.get(fld):
+                e[fld] = c[fld]
+        vgs = e.setdefault("vorgaenge", [])
+        for vg in c.get("vorgaenge") or []:
+            if vg not in vgs:
+                vgs.append(vg)
+            alias_index.setdefault(vg, k)
+        ident = booking_value.identity_key(e.get("nachname"), _schiff_of(e), e.get("abreise"))
+        if ident:
+            ident_index.setdefault(ident, k)
+        sig = booking_value.value_sig(e.get("nachname"), _schiff_of(e), e.get("value"))
+        if sig:
+            sig_index.setdefault(sig, k)
         if state == "option" and c.get("optionsfrist"):
             e["optionsfrist"] = c["optionsfrist"]
         # frühestes Datum je Stufe festhalten
@@ -95,13 +161,17 @@ def merge(a: dict, b: dict) -> dict:
         e = dict(hi)
         if not e.get("value") and lo.get("value"):
             e["value"] = lo["value"]
-        for k in ("nachname", "label", "optionsfrist"):
+        for k in ("nachname", "label", "optionsfrist", "schiff", "abreise"):
             if not e.get(k) and lo.get(k):
                 e[k] = lo[k]
         for k in ("option_date", "buchung_date", "storno_date"):
             ds = [x.get(k) for x in (ea, eb) if x.get(k)]
             if ds:
                 e[k] = min(ds)
+        vgs = list(hi.get("vorgaenge") or [])
+        vgs += [v for v in (lo.get("vorgaenge") or []) if v not in vgs]
+        if vgs:
+            e["vorgaenge"] = vgs
         out[vg] = e
     return out
 
@@ -184,6 +254,9 @@ def summary() -> dict | None:
                                   if e["state"] == "option" and e.get("option_date") == iso),
         "pipeline_value": sum(e["value"] for e in open_opts),
         "pipeline_count": len(open_opts),
+        # Offene Optionen, deren Preis in keiner Bestätigung erkennbar war – die
+        # Pipeline-Summe untertreibt dann; ehrlich ausweisen statt still 0 zu zählen
+        "pipeline_missing": sum(1 for e in open_opts if not e.get("value")),
         "items": items,
         "_led": led,   # roher Vorgangs-Dict für den Hybrid-Festwert (Excel + Mail)
     }
