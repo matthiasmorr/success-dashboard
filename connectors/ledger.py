@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date, timedelta
 
 from . import booking_value
@@ -138,8 +139,65 @@ def update(days: int = 40, top: int = 200) -> dict | None:
         dk = "buchung_date" if state == "festbuchung" else "option_date"
         if not e[dk] or c["date"] < e[dk]:
             e[dk] = c["date"]
+    led = _dedupe(led)   # selbstheilend, falls ein alter Stand Duplikate einschleppte
     _save(led)
     return led
+
+
+def _merge_pair(ea: dict, eb: dict) -> dict:
+    """Zwei Einträge desselben Vorgangs vereinen: höherer Status gewinnt
+    (option < festbuchung), bekannter Wert schlägt 0, Datumsfelder = frühestes
+    bekanntes Datum, Storno bleibt, Vorgangs-Aliasse werden vereint."""
+    hi, lo = ((ea, eb) if _RANK.get(ea.get("state"), 1) >= _RANK.get(eb.get("state"), 1)
+              else (eb, ea))
+    e = dict(hi)
+    if not e.get("value") and lo.get("value"):
+        e["value"] = lo["value"]
+    for k in ("nachname", "label", "optionsfrist", "schiff", "abreise"):
+        if not e.get(k) and lo.get(k):
+            e[k] = lo[k]
+    for k in ("option_date", "buchung_date", "storno_date"):
+        ds = [x.get(k) for x in (ea, eb) if x.get(k)]
+        if ds:
+            e[k] = min(ds)
+    vgs = list(hi.get("vorgaenge") or [])
+    vgs += [v for v in (lo.get("vorgaenge") or []) if v not in vgs]
+    if vgs:
+        e["vorgaenge"] = vgs
+    return e
+
+
+def _canon_key(key: str) -> str:
+    """Hash-/Mail-Schlüssel bleiben; echte Vorgangsnummern werden normalisiert."""
+    if key.startswith("mail:") or re.fullmatch(r"[0-9a-f]{32}", key):
+        return key
+    return booking_value.norm_vorgang(key) or key
+
+
+def _dedupe(led: dict) -> dict:
+    """Duplikate im Ledger zusammenführen (gleiche normalisierte Nummer, gleiche
+    Identität oder gleiche Wert-Signatur). Selbstheilend: auch wenn ein alter
+    Stand (Drive-Sync, alte Cloud-Action) Duplikat-Schlüssel wieder einschleppt,
+    kollabieren sie beim nächsten Merge."""
+    out: dict = {}
+    for key, e in led.items():
+        nk = _canon_key(key)
+        out[nk] = _merge_pair(out[nk], e) if nk in out else dict(e)
+    idx: dict[str, str] = {}
+    for key in list(out.keys()):
+        e = out[key]
+        sigs = [s for s in (
+            booking_value.identity_key(e.get("nachname"), _schiff_of(e), e.get("abreise")),
+            booking_value.value_sig(e.get("nachname"), _schiff_of(e), e.get("value")),
+        ) if s]
+        tgt = next((idx[s] for s in sigs if s in idx and idx[s] != key), None)
+        if tgt is not None and tgt in out:
+            out[tgt] = _merge_pair(out[tgt], e)
+            del out[key]
+            key = tgt
+        for s in sigs:
+            idx.setdefault(s, key)
+    return out
 
 
 def merge(a: dict, b: dict) -> dict:
@@ -147,33 +205,14 @@ def merge(a: dict, b: dict) -> dict:
 
     Beide Seiten rechnen unabhängig (Mac-launchd und GitHub-Action) – ohne Merge
     überschreibt der letzte Schreiber den anderen und Vorgänge »flackern«.
-    Regeln je Vorgang: höherer Status gewinnt (option < festbuchung), bekannter
-    Wert schlägt 0, Datumsfelder = frühestes bekanntes Datum, Storno bleibt.
+    Nach der Vereinigung per Schlüssel läuft eine Dedupe-Passe (Nummer/Identität/
+    Signatur), damit Altbestände keine Duplikate wieder einschleppen.
     """
     out: dict = {}
     for vg in set(a) | set(b):
         ea, eb = a.get(vg), b.get(vg)
-        if ea is None or eb is None:
-            out[vg] = dict(ea or eb)
-            continue
-        hi, lo = ((ea, eb) if _RANK.get(ea.get("state"), 1) >= _RANK.get(eb.get("state"), 1)
-                  else (eb, ea))
-        e = dict(hi)
-        if not e.get("value") and lo.get("value"):
-            e["value"] = lo["value"]
-        for k in ("nachname", "label", "optionsfrist", "schiff", "abreise"):
-            if not e.get(k) and lo.get(k):
-                e[k] = lo[k]
-        for k in ("option_date", "buchung_date", "storno_date"):
-            ds = [x.get(k) for x in (ea, eb) if x.get(k)]
-            if ds:
-                e[k] = min(ds)
-        vgs = list(hi.get("vorgaenge") or [])
-        vgs += [v for v in (lo.get("vorgaenge") or []) if v not in vgs]
-        if vgs:
-            e["vorgaenge"] = vgs
-        out[vg] = e
-    return out
+        out[vg] = _merge_pair(ea, eb) if ea is not None and eb is not None else dict(ea or eb)
+    return _dedupe(out)
 
 
 def _state_date(e: dict) -> str | None:
