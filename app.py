@@ -551,12 +551,45 @@ def _booking_list(items, max_groups: int = 20):
     return '<div class="bk-list">' + "".join(rows) + "</div>"
 
 
+_ANREDE_W = ("frau", "herr", "familie", "fam", "hr", "fr")
+
+
+def _name_parts(n):
+    """(Vorname, Nachname) normalisiert, Anrede entfernt – leer bei Adressen.
+
+    Umlaute aufgelöst, damit 'Kühne' und 'kuehne' denselben Schlüssel ergeben.
+    Vorname nur bei ≥2 Namensteilen: 'Herr Kühne' → ('', 'kuehne').
+    Firmen-/Sammelabsender ('Booking | Executive Cruises GER') liefern nichts – sonst
+    würden zwei unabhängige Reederei-Mails über deren letztes Wort zusammenfallen.
+    """
+    if not n or "@" in n or "|" in n:
+        return "", ""
+    parts = [w for w in n.split() if w.strip(".").lower() not in _ANREDE_W]
+    if not parts or len(parts) > 3:
+        return "", ""
+
+    def _norm(s):
+        s = s.lower()
+        for a, b in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss")):
+            s = s.replace(a, b)
+        return re.sub(r"[^a-z0-9]", "", s)
+
+    return (_norm(parts[0]) if len(parts) >= 2 else ""), _norm(parts[-1])
+
+
 def _activity_list(items):
     # Alles zu EINER Person bündeln: eingehende Mail + gesendete Antwort eines Vorgangs
     # (und mehrere Vorgänge derselben Person) erscheinen in EINER Karte.
-    def _name_key(it):
-        n = (it.get("kontakt") or "").strip()
-        return re.sub(r"[^a-z0-9äöüß]", "", n.lower()) if (n and "@" not in n) else ""
+    def _keys(g):
+        """(Nachname, Vornamen) der Gruppe – Merge-Schlüssel + Kollisionsschutz."""
+        nach, vor = "", set()
+        for x in g:
+            for cand in (x.get("name"), x.get("kontakt")):
+                v, n = _name_parts(cand)
+                nach = nach or n
+                if v:
+                    vor.add(v)
+        return nach, vor
 
     groups: list[list[dict]] = []
     by_cid: dict[str, list[dict]] = {}
@@ -569,16 +602,28 @@ def _activity_list(items):
             groups.append(g)
             if cid:
                 by_cid[cid] = g
+    # Zusammenführung über den NACHNAMEN, nicht über den vollen Anzeigenamen: die
+    # Website-Formular-Anfrage nennt den vollen Namen („Werner Kühne"), die Antwort
+    # darauf läuft in einem eigenen Thread und kennt nur die Anrede („Herr Kühne") –
+    # über conversationId oder exakten Namen finden die beiden nie zusammen.
+    # Schutz: unterschiedliche Vornamen zum selben Nachnamen = zwei verschiedene
+    # Kunden ('Lisa Seidel' / 'Tobias Seidel') und bleiben getrennt.
     merged: list[list[dict]] = []
-    by_name: dict[str, list[dict]] = {}
+    by_name: dict[str, list[tuple[set, list[dict]]]] = {}
     for g in groups:
-        nk = next((_name_key(x) for x in g if _name_key(x)), "")
-        if nk and nk in by_name:
-            by_name[nk].extend(g)
+        nach, vor = _keys(g)
+        ziel = None
+        for vor_alt, g_alt in by_name.get(nach, []) if nach else []:
+            if not vor or not vor_alt or (vor & vor_alt):
+                ziel = (vor_alt, g_alt)
+                break
+        if ziel:
+            ziel[1].extend(g)
+            ziel[0].update(vor)
         else:
             merged.append(g)
-            if nk:
-                by_name[nk] = g
+            if nach:
+                by_name.setdefault(nach, []).append((vor, g))
 
     def _name_rank(n):
         """Voller Name mit Vorname (3) > Anrede/Einzelwort (2) > Adresse (1)."""

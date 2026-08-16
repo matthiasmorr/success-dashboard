@@ -94,6 +94,28 @@ def _full_name(n: str) -> bool:
         a.rstrip(".") for a in _ANREDE) and not _generic_name(n)
 
 
+def _name_parts(n: str) -> tuple[str, str]:
+    """(Vorname, Nachname) normalisiert, Anrede entfernt; Umlaute aufgelöst.
+
+    Vorname nur bei ≥2 Namensteilen: 'Herr Kühne' → ('', 'kuehne').
+    Firmen-/Sammelabsender ('Booking | Executive Cruises GER') liefern nichts.
+    """
+    if not n or "@" in n or "|" in n:
+        return "", ""
+    parts = [w for w in n.split() if w.strip(".").lower() not in
+             tuple(a.rstrip(".") for a in _ANREDE)]
+    if not parts or len(parts) > 3:
+        return "", ""
+
+    def _norm(s: str) -> str:
+        s = s.lower()
+        for a, b in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss")):
+            s = s.replace(a, b)
+        return re.sub(r"[^a-z0-9]", "", s)
+
+    return (_norm(parts[0]) if len(parts) >= 2 else ""), _norm(parts[-1])
+
+
 def _summarize(subject: str, who: str, preview: str, outgoing: bool = False) -> dict:
     import anthropic  # noqa: PLC0415
 
@@ -228,6 +250,26 @@ def summaries() -> list[dict] | None:
                     break
     for it in out:
         b = best.get(it["addr"])
+        if b:
+            if not _full_name(it.get("name", "")):
+                it["name"] = b
+            if not _full_name(it.get("kontakt", "")):
+                it["kontakt"] = b
+
+    # Zweites Verzeichnis über den NACHNAMEN. Nötig, weil Website-Anfragen von
+    # formresponses@… kommen, die Antwort darauf aber an die echte Kundenadresse geht –
+    # über die Adresse finden „Werner Kühne" (Formular) und „Herr Kühne" (Antwort) nie
+    # zusammen. Nur eindeutige Nachnamen: kommen zum selben Nachnamen zwei verschiedene
+    # Vornamen vor, sind es zwei Kunden und es wird nichts vererbt.
+    voll: dict[str, set[str]] = {}
+    for it in out:
+        for cand in (it.get("name", ""), it.get("kontakt", "")):
+            if _full_name(cand):
+                voll.setdefault(_name_parts(cand)[1], set()).add(cand)
+    best_nach = {nach: max(namen, key=len) for nach, namen in voll.items()
+                 if len({_name_parts(n)[0] for n in namen}) == 1}
+    for it in out:
+        b = best_nach.get(_name_parts(it.get("kontakt") or it.get("name") or "")[1])
         if b:
             if not _full_name(it.get("name", "")):
                 it["name"] = b
