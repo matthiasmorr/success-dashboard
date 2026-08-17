@@ -81,6 +81,36 @@ def messages(folder_name: str, top: int = 50,
     return r.json().get("value", [])
 
 
+def messages_since(folder_name: str, since: date, select: str, page: int = 200,
+                   max_pages: int = 10) -> list[dict]:
+    """Alle Nachrichten eines Ordners ab `since` – serverseitig gefiltert, mit Paging.
+
+    `messages()` liefert nur die neuesten `top` Einträge; für ein 30-Tage-Fenster
+    reicht das nicht zuverlässig (Gesendete Elemente sind dicht). $filter auf
+    receivedDateTime + $orderby ist bei Graph erlaubt, nachgeladen wird über
+    @odata.nextLink (gedeckelt, damit ein volles Postfach den Lauf nicht sprengt).
+    """
+    import requests  # noqa: PLC0415
+
+    fid = folder_id(folder_name)
+    if not fid:
+        return []
+    url = f"{_base()}/mailFolders/{fid}/messages"
+    params: dict | None = {
+        "$filter": f"receivedDateTime ge {since.isoformat()}T00:00:00Z",
+        "$top": str(page), "$orderby": "receivedDateTime desc", "$select": select}
+    out: list[dict] = []
+    for _ in range(max_pages):
+        r = requests.get(url, params=params, headers=_headers(), timeout=40)
+        r.raise_for_status()
+        d = r.json()
+        out.extend(d.get("value", []))
+        url, params = d.get("@odata.nextLink"), None
+        if not url:
+            break
+    return out
+
+
 def message_body(msg_id: str) -> str:
     """Voller Body (HTML oder Text) einer einzelnen Nachricht."""
     import requests  # noqa: PLC0415

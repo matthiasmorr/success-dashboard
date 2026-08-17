@@ -5,7 +5,7 @@ Neue Quellen einfach hier registrieren – app.py iteriert über ALL_CONNECTORS.
 """
 from .base import Category, ConnectorResult, Metric
 from . import (youtube, youtube_revenue, kit, kit_broadcast, digistore, awin,
-               aida_pvn, kreuzfahrtstudio, landausfluege, heute)
+               aida_pvn, kreuzfahrtstudio, landausfluege, heute, leads)
 
 # Reihenfolge = Anzeige-Reihenfolge im Dashboard
 ALL_CONNECTORS = [
@@ -18,6 +18,8 @@ ALL_CONNECTORS = [
     digistore.fetch,
     awin.fetch,
     aida_pvn.fetch,
+    # Pipeline / Aktivität
+    leads.fetch,
     # Reichweite
     youtube.fetch,
     kit.fetch,

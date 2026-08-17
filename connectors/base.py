@@ -9,6 +9,7 @@ class Category(str, Enum):
     HEUTE = "Erfolg"
     EINNAHMEN = "Einnahmen"
     PIPELINE = "Pipeline / Aktivität"
+    LEADS = "Sales-Leads"
     VANITY = "Reichweite"
 
 

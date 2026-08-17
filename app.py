@@ -18,7 +18,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -244,6 +244,38 @@ st.markdown(
     .act-betreff { color:#9a9ac0; font-size:.82rem; margin:2px 0 3px; }
     .act-text { color:#3a3a5a; font-size:.88rem; line-height:1.35; }
     .act-reply { color:#2f7a2f; font-weight:700; }
+
+    /* ===================== Sales-Leads (CRM-Liste) ===================== */
+    .ld-list { margin:4px 0 14px; display:flex; flex-direction:column; gap:9px; }
+    .ld-row { border:1px solid #e7e6f7; border-left:4px solid #d8d6f0; border-radius:12px;
+        padding:12px 15px; background:#fff; }
+    .ld-row.wartet { border-left-color:#d98a1f; background:#fff8ef; }
+    .ld-row.anfrage { border-left-color:#3636D9; }
+    .ld-row.gebucht { border-left-color:#3a8a3a; }
+    .ld-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .ld-name { font-weight:700; color:#1B1B6D; font-size:.98rem; text-decoration:none; }
+    .ld-name:hover { text-decoration:underline; }
+    .ld-date { color:#9a9ac0; font-size:.78rem; margin-left:auto; white-space:nowrap; }
+    .ld-flag { font-size:.64rem; font-weight:700; border-radius:999px; padding:2px 9px; white-space:nowrap; }
+    .f-wartet { color:#8a5a10; background:#fdf0dc; }
+    .f-anfrage { color:#fff; background:#3636D9; }
+    .f-option { color:#1B1B6D; background:#D6D4F2; }
+    .f-buchung { color:#fff; background:#3a8a3a; }
+    .f-kit { color:#2f7a2f; background:#e4f3e4; }
+    .f-kitoff { color:#b23b3b; background:#fbe7e7; }
+    .f-nokit { color:#5a5a86; background:#fff; border:1px dashed #b9b7e0; }
+    .ld-meta { color:#9a9ac0; font-size:.78rem; margin:4px 0 0; display:flex; gap:10px; flex-wrap:wrap; }
+    .ld-meta a { color:#5a5a86; text-decoration:none; }
+    .ld-meta a:hover { text-decoration:underline; }
+    .ld-tags { display:flex; gap:5px; flex-wrap:wrap; margin-top:6px; }
+    .ld-tag { font-size:.66rem; font-weight:700; color:#3636D9; background:#eceaf6;
+        border-radius:6px; padding:2px 7px; }
+    .ld-wish { margin-top:7px; padding:8px 11px; background:#f8f7fd; border-radius:9px;
+        color:#3a3a5a; font-size:.82rem; line-height:1.45; }
+    .ld-wish b { color:#1B1B6D; }
+    .ld-quote { color:#5a5a86; font-style:italic; margin-top:5px; display:block; }
+    .ld-betreff { color:#9a9ac0; font-size:.78rem; margin-top:6px;
+        overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
     @keyframes morr-sail {
         0%,100% { transform:translateY(0) rotate(-7deg); }
@@ -754,14 +786,14 @@ if _do in ("refresh", "live"):
     st.rerun()
 
 nav = st.query_params.get("nav", "heute")
-if nav not in ("heute", "vorgaenge", "einnahmen", "reichweite"):
+if nav not in ("heute", "vorgaenge", "leads", "einnahmen", "reichweite"):
     nav = "heute"
 
 results, _data_ts = load_all(st.session_state.pop("_mode", "auto"))
 _stand = datetime.fromtimestamp(_data_ts).strftime("%d.%m. · %H:%M") if _data_ts else "—"
 hero = next((r for r in results if r.category == Category.HEUTE), None)
 
-NAV = [("heute", "🎯 Heute"), ("vorgaenge", "📋 Vorgänge"),
+NAV = [("heute", "🎯 Heute"), ("vorgaenge", "📋 Vorgänge"), ("leads", "🤝 Leads"),
        ("einnahmen", "💶 Einnahmen"), ("reichweite", "📣 Reichweite")]
 CATEGORY_ICON = {Category.EINNAHMEN: "💶", Category.PIPELINE: "📨"}
 
@@ -839,6 +871,123 @@ def _vorgaenge_html():
     return "".join(parts)
 
 
+_LEAD_FILTER = {
+    "": ("Alle", lambda x: True),
+    "wartet": ("⏳ Wartet auf Antwort", lambda x: x["offen"]),
+    "anfragen": ("🔥 Reiseanfragen", lambda x: x["anfrage"]),
+    "nokit": ("📭 Nicht im Morrletter", lambda x: not x["kit_state"]),
+    "vorgang": ("🚢 Mit Vorgang", lambda x: bool(x["vorgang"])),
+}
+# Formularfelder, die in der Wunsch-Zeile erscheinen (Reihenfolge = Anzeige)
+_WISH = [("ziel", "🧭"), ("dauer", "⏱️"), ("kabine", "🛏️"), ("reederei", "🚢"),
+         ("flughafen", "✈️")]
+
+
+def _lead_wish(f):
+    """Eine Zeile „Ziel · Dauer · Kabine …" aus den Formularfeldern der Reiseanfrage."""
+    bits = [f"{icon} {esc(f[key])}" for key, icon in _WISH if f.get(key)]
+    pers = []
+    if f.get("erwachsene"):
+        pers.append(f'{esc(f["erwachsene"])} Erw.')
+    if f.get("kinder"):
+        pers.append(f'{esc(f["kinder"])} Kind' + ("er" if f["kinder"].strip() != "1" else ""))
+    if pers:
+        bits.append("👥 " + " + ".join(pers))
+    if f.get("von") or f.get("bis"):
+        def _d(s):
+            return f"{s[8:10]}.{s[5:7]}.{s[2:4]}" if len(s or "") >= 10 else esc(s or "")
+        bits.append(f'📅 {_d(f.get("von", ""))} – {_d(f.get("bis", ""))}')
+    if f.get("budget"):
+        bits.append(f'💶 {esc(f["budget"])}')
+    return " · ".join(bits)
+
+
+def _leads_html():
+    res = next((r for r in results if r.category == Category.LEADS), None)
+    if res is None:
+        return '<div class="mm-empty">Leads werden beim nächsten Lauf berechnet.</div>'
+    if not res.ok:
+        return _group_html(res)
+    sec = res.hero_sections[0] if res.hero_sections else {}
+    leads = sec.get("leads") or []
+    parts = [_grid_html(res.metrics, 5)]
+
+    sel = st.query_params.get("f", "")
+    if sel not in _LEAD_FILTER:
+        sel = ""
+    parts.append('<div class="mm-pills">' + "".join(
+        f'<a class="mm-pill{" active" if key == sel else ""}" '
+        f'href="{_url(nav="leads", f=key or None)}">{esc(label)}'
+        f' <b>{sum(1 for x in leads if test(x))}</b></a>'
+        for key, (label, test) in _LEAD_FILTER.items()) + "</div>")
+
+    shown = [x for x in leads if _LEAD_FILTER[sel][1](x)]
+    if not shown:
+        return "".join(parts) + '<div class="mm-empty">Keine Kontakte in dieser Auswahl.</div>'
+
+    rows = []
+    for x in shown[:80]:
+        cls = ("wartet" if x["offen"] else
+               "gebucht" if x["vorgang"] == "festbuchung" else
+               "anfrage" if x["anfrage"] else "")
+        flags = []
+        if x["offen"]:
+            still = x["tage_still"]
+            flags.append('<span class="ld-flag f-wartet">⏳ wartet'
+                         + (f" · {still} T." if still >= 1 else "") + "</span>")
+        if x["anfrage"]:
+            flags.append('<span class="ld-flag f-anfrage">Reiseanfrage</span>')
+        if x["vorgang"] == "festbuchung":
+            flags.append('<span class="ld-flag f-buchung">🚢 gebucht</span>')
+        elif x["vorgang"] == "option":
+            flags.append('<span class="ld-flag f-option">Option</span>')
+        if x["kit_state"] == "active":
+            flags.append('<span class="ld-flag f-kit">📧 Morrletter</span>')
+        elif x["kit_state"]:
+            flags.append(f'<span class="ld-flag f-kitoff">📧 {esc(x["kit_label"])}</span>')
+        else:
+            flags.append('<span class="ld-flag f-nokit">kein Morrletter</span>')
+
+        d = x["datum"]
+        tag = f"{d[8:10]}.{d[5:7]}. · {x['zeit']}" if len(d) >= 10 else ""
+        betreff = x.get("betreff") or ""
+        href = f'mailto:{quote(x["email"])}' + (
+            "?subject=" + quote("Re: " + betreff) if betreff else "")
+        meta = [f'<a href="{href}">✉️ {esc(x["email"])}</a>']
+        if x.get("telefon"):
+            meta.append(f'<a href="tel:{quote(x["telefon"])}">📞 {esc(x["telefon"])}</a>')
+        meta.append(f'↓ {x["n_in"]} · ↑ {x["n_out"]}')
+        e = x["erstkontakt"]
+        meta.append(f'seit {e[8:10]}.{e[5:7]}.')
+        if x["kit_since"]:
+            k = x["kit_since"]
+            meta.append(f'Abo seit {k[8:10]}.{k[5:7]}.{k[2:4]}')
+
+        tags = "".join(f'<span class="ld-tag">{esc(t)}</span>' for t in x["kit_tags"][:8])
+        wish = _lead_wish(x.get("form") or {})
+        wunsch = (x.get("form") or {}).get("wunsch", "")
+        wish_html = ""
+        if wish or wunsch:
+            wish_html = ('<div class="ld-wish">' + wish
+                         + (f'<span class="ld-quote">„{esc(wunsch)}"</span>' if wunsch else "")
+                         + "</div>")
+        rows.append(
+            f'<div class="ld-row {cls}"><div class="ld-head">'
+            f'<a class="ld-name" href="{href}">{esc(x["name"])}</a>'
+            + "".join(flags) + f'<span class="ld-date">{tag}</span></div>'
+            f'<div class="ld-meta">' + " ".join(meta) + "</div>"
+            + (f'<div class="ld-tags">{tags}</div>' if tags else "")
+            + wish_html
+            + (f'<div class="ld-betreff">{esc(betreff)}</div>' if betreff else "")
+            + "</div>")
+    parts.append('<div class="ld-list">' + "".join(rows) + "</div>")
+    if len(shown) > 80:
+        parts.append(_cap_html(f"… und {len(shown) - 80} weitere Kontakte."))
+    if res.caption:
+        parts.append(_cap_html(res.caption))
+    return "".join(parts)
+
+
 def _einnahmen_html():
     parts = []
     lsec = _section(hero, "fakturiert")
@@ -883,7 +1032,7 @@ def _reichweite_html():
     return "".join(parts) or '<div class="mm-empty">Keine Reichweiten-Daten verfügbar.</div>'
 
 
-_CONTENT = {"heute": _heute_html, "vorgaenge": _vorgaenge_html,
+_CONTENT = {"heute": _heute_html, "vorgaenge": _vorgaenge_html, "leads": _leads_html,
             "einnahmen": _einnahmen_html, "reichweite": _reichweite_html}
 
 
@@ -891,7 +1040,8 @@ _CONTENT = {"heute": _heute_html, "vorgaenge": _vorgaenge_html,
 sidebar = (
     f'<div class="mm-brand">{_LOGO_WHITE}<span>Daily Morr</span></div>'
     + "".join(
-        f'<a class="mm-nav{" active" if key == nav else ""}" href="{_url(nav=key, day=None)}">{esc(label)}</a>'
+        f'<a class="mm-nav{" active" if key == nav else ""}" '
+        f'href="{_url(nav=key, day=None, f=None)}">{esc(label)}</a>'
         for key, label in NAV)
     + f'<div class="mm-foot"><b>morr.de</b><br>Stand {esc(_stand)}<br>'
       f'<span class="sail">🚢</span> alle Quellen live</div>'
