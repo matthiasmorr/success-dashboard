@@ -100,6 +100,9 @@ st.markdown(
             align-items:center; gap:6px; padding:12px 14px; }
         .mm-foot { display:none; }
         .mm-main { padding:16px 16px 32px; }
+        /* Hero-Kachel mobil auf volle Breite – Euro-Betrag bekommt Luft zum Rand */
+        .mm-hero { flex-basis:100%; padding:20px 22px; }
+        .mm-hero-row { gap:12px; }
     }
 
     /* Sidebar-Inhalt */
@@ -127,11 +130,14 @@ st.markdown(
 
     /* ===================== Held + Vergleichskarten ===================== */
     .mm-hero-row { display:flex; gap:16px; margin:4px 0 16px; flex-wrap:wrap; }
-    .mm-hero { flex:1.7; min-width:230px; color:#fff; border-radius:18px; padding:22px 26px;
-        background:linear-gradient(135deg,#1B1B6D 0%,#3636D9 100%); box-shadow:0 8px 26px rgba(27,27,109,.22); }
+    .mm-hero { flex:1.7; min-width:min(280px,100%); color:#fff; border-radius:18px; padding:22px 26px;
+        background:linear-gradient(135deg,#1B1B6D 0%,#3636D9 100%); box-shadow:0 8px 26px rgba(27,27,109,.22);
+        container-type:inline-size; }
     .mm-hero-eyebrow { font-weight:700; text-transform:uppercase; letter-spacing:.13em; font-size:.74rem; color:#d4d3f4; }
-    .mm-hero-value { font-family:'Fraunces',serif; font-weight:700; font-size:3.1rem; line-height:1;
-        margin:6px 0 4px; white-space:nowrap; }
+    /* Schrift skaliert mit der Kachelbreite (cqw), damit auch 5-stellige Summen
+       („20.531,10 €") nie am Rand kleben; 2.4rem = Fallback ohne Container-Queries. */
+    .mm-hero-value { font-family:'Fraunces',serif; font-weight:700; font-size:2.4rem;
+        font-size:clamp(1.9rem, 12.5cqw, 3.1rem); line-height:1; margin:6px 0 4px; white-space:nowrap; }
     .mm-hero-sub { color:#d4d3f4; font-size:.82rem; font-weight:700; }
     .mm-cmp { flex:1; min-width:104px; background:#fff; border:1px solid #e7e6f7; border-radius:18px;
         padding:16px 18px; display:flex; flex-direction:column; justify-content:center; }
@@ -139,6 +145,25 @@ st.markdown(
         font-weight:700; margin-bottom:5px; }
     .mm-cmp-value { font-family:'Fraunces',serif; font-weight:600; font-size:1.55rem; color:#1B1B6D; white-space:nowrap; }
     .mm-cmp-sub { color:#9a9ac0; font-size:.72rem; margin-top:3px; }
+
+    /* Aufklappbare Aufstellung der Erfolgs-Bestandteile */
+    details.mm-hero summary, details.mm-cmp summary { list-style:none; cursor:pointer; }
+    details.mm-hero summary::-webkit-details-marker,
+    details.mm-cmp summary::-webkit-details-marker { display:none; }
+    .mm-bd-hint { margin-left:8px; padding:1px 8px; border:1px solid rgba(255,255,255,.4);
+        border-radius:999px; font-size:.68rem; white-space:nowrap; }
+    .mm-bd-hint::after { content:" ▾"; }
+    details[open] .mm-bd-hint::after { content:" ▴"; }
+    .mm-bd { margin-top:12px; padding-top:10px; border-top:1px solid rgba(255,255,255,.28);
+        display:flex; flex-direction:column; gap:4px; }
+    .mm-bd-row { display:flex; justify-content:space-between; gap:14px; font-size:.84rem; font-weight:700; }
+    .mm-bd-row span:first-child { font-weight:600; color:#d4d3f4; }
+    .mm-bd-row span:last-child { white-space:nowrap; }
+    .mm-bd-note { color:#b9b9e8; font-size:.7rem; margin-top:6px; }
+    .mm-bd--light { border-top-color:#edeaf9; }
+    .mm-bd--light .mm-bd-row { font-size:.74rem; color:#1B1B6D; }
+    .mm-bd--light .mm-bd-row span:first-child { color:#9a9ac0; }
+    details.mm-cmp[open] { min-width:min(240px,100%); }
 
     /* ===================== KPI-Karten-Raster ===================== */
     .mm-grid { display:grid; gap:12px; margin:0 0 16px; align-items:start; }
@@ -435,23 +460,51 @@ def _group_html(res):
     return f'<div class="mm-info warn">⚠️ <b>{esc(res.name)}</b> – Fehler beim Abruf: {esc(res.error)}</div>'
 
 
+def _bd_rows(breakdown):
+    return "".join(f'<div class="mm-bd-row"><span>{esc(lbl)}</span><span>{esc(val)}</span></div>'
+                   for lbl, val in breakdown)
+
+
 def _hero_html(bands):
-    """Held „Erfolg heute" + 3 Vergleichskarten (gestern · 7 T · 30 T) in einer Reihe."""
+    """Held „Erfolg heute" + 3 Vergleichskarten (gestern · 7 T · 30 T) in einer Reihe.
+    Mit Aufstellung der Bestandteile klappt jede Kachel per Klick auf (<details>)."""
     hero = bands[0]
-    cells = [
-        f'<div class="mm-hero" title="{esc(hero.get("help", ""))}">'
-        f'<div class="mm-hero-eyebrow">{esc(hero["label"])}</div>'
-        f'<div class="mm-hero-value">{hero["value"]}</div>'
-        f'<div class="mm-hero-sub">{esc(hero.get("sub", ""))}</div></div>'
-    ]
+    bd = hero.get("breakdown") or []
+    if bd:
+        cells = [
+            f'<details class="mm-hero" title="{esc(hero.get("help", ""))}"><summary>'
+            f'<div class="mm-hero-eyebrow">{esc(hero["label"])}</div>'
+            f'<div class="mm-hero-value">{hero["value"]}</div>'
+            f'<div class="mm-hero-sub">{esc(hero.get("sub", ""))}'
+            f'<span class="mm-bd-hint">Aufstellung</span></div>'
+            f'</summary><div class="mm-bd">{_bd_rows(bd)}'
+            f'<div class="mm-bd-note">Optionen zählen nicht mit – sie sind Pipeline.</div>'
+            f'</div></details>'
+        ]
+    else:   # alter Snapshot ohne Aufstellung → wie bisher, nicht klickbar
+        cells = [
+            f'<div class="mm-hero" title="{esc(hero.get("help", ""))}">'
+            f'<div class="mm-hero-eyebrow">{esc(hero["label"])}</div>'
+            f'<div class="mm-hero-value">{hero["value"]}</div>'
+            f'<div class="mm-hero-sub">{esc(hero.get("sub", ""))}</div></div>'
+        ]
     for b in bands[1:]:
         label = b["label"].replace("Erfolg ", "")
         val = b["value"].split(",")[0] + " €" if "," in b["value"] else b["value"]
-        cells.append(
-            f'<div class="mm-cmp" title="{esc(b.get("help", ""))}">'
-            f'<div class="mm-cmp-label">{esc(label)}</div>'
-            f'<div class="mm-cmp-value">{val}</div>'
-            f'<div class="mm-cmp-sub">{esc(b.get("sub", ""))}</div></div>')
+        bdb = b.get("breakdown") or []
+        if bdb:
+            cells.append(
+                f'<details class="mm-cmp" title="{esc(b.get("help", ""))}"><summary>'
+                f'<div class="mm-cmp-label">{esc(label)}</div>'
+                f'<div class="mm-cmp-value">{val}</div>'
+                f'<div class="mm-cmp-sub">{esc(b.get("sub", ""))}</div>'
+                f'</summary><div class="mm-bd mm-bd--light">{_bd_rows(bdb)}</div></details>')
+        else:
+            cells.append(
+                f'<div class="mm-cmp" title="{esc(b.get("help", ""))}">'
+                f'<div class="mm-cmp-label">{esc(label)}</div>'
+                f'<div class="mm-cmp-value">{val}</div>'
+                f'<div class="mm-cmp-sub">{esc(b.get("sub", ""))}</div></div>')
     return '<div class="mm-hero-row">' + "".join(cells) + "</div>"
 
 

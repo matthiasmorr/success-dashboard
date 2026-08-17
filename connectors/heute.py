@@ -132,19 +132,33 @@ def fetch() -> ConnectorResult:
     # AIDA PVN = Affiliate wie Awin (AIDA lief bis Mitte 2026 über Awin und zählte
     # dort in den Erfolg). NICHT die Newsletter-Werbung – die ist die „AIDA"-Rechnung
     # in Lexware, ein separater Einnahmestrom.
-    e_heute = _erfolg(_festprov(today, today),
-                      land["today_prov"] if land else 0.0, digi_h, awin_h,
-                      pvn["today_prov"] if pvn else 0.0, yt_day)
-    e_gestern = _erfolg(_festprov(gestern, gestern),
-                        land["yesterday_prov"] if land else 0.0, digi_g, awin_g,
-                        pvn["yesterday_prov"] if pvn else 0.0, yt_day)
-    e_7d = _erfolg(_festprov(d7, today), land["prov_7d"] if land else 0.0,
-                   digi_7, awin_7, pvn["prov_7d"] if pvn else 0.0,
-                   yt["rev_7d"] if yt else 0.0)   # 7/30 T.: echte YouTube-Umsätze
+    fp_h, fp_g = _festprov(today, today), _festprov(gestern, gestern)
+    fp_7, fp_30 = _festprov(d7, today), _festprov(d30, today)
+    land_h = land["today_prov"] if land else 0.0
+    land_g = land["yesterday_prov"] if land else 0.0
+    land_7 = land["prov_7d"] if land else 0.0
+    land_30 = land["prov_30d"] if land else 0.0
+    pvn_h = pvn["today_prov"] if pvn else 0.0
+    pvn_g = pvn["yesterday_prov"] if pvn else 0.0
+    pvn_7 = pvn["prov_7d"] if pvn else 0.0
+    pvn_30 = pvn["prov_30d"] if pvn else 0.0
+    yt_7 = yt["rev_7d"] if yt else 0.0   # 7/30 T.: echte YouTube-Umsätze
+    yt_30 = yt["rev_30d"] if yt else 0.0
+
+    e_heute = _erfolg(fp_h, land_h, digi_h, awin_h, pvn_h, yt_day)
+    e_gestern = _erfolg(fp_g, land_g, digi_g, awin_g, pvn_g, yt_day)
+    e_7d = _erfolg(fp_7, land_7, digi_7, awin_7, pvn_7, yt_7)
     # Lexware-Einnahmen (fakturiert, monatlich/laggy) NUR ins 30-Tage-Band
-    e_30d = _erfolg(_festprov(d30, today), land["prov_30d"] if land else 0.0,
-                    digi_30, awin_30, pvn["prov_30d"] if pvn else 0.0,
-                    yt["rev_30d"] if yt else 0.0) + lex_30d
+    e_30d = _erfolg(fp_30, land_30, digi_30, awin_30, pvn_30, yt_30) + lex_30d
+
+    def _bd(fest_p, land_p, d_digi, d_awin, d_pvn, yt_v, yt_lbl="YouTube", lex_v=None):
+        """Aufstellung der Bestandteile – klappt in der Hero-Reihe per Klick auf."""
+        rows = [("🚢 Buchungsprovision", fest_p), ("🏝️ Landausflüge", land_p),
+                ("🛒 Digistore", d_digi), ("🔗 Awin", d_awin),
+                ("🅰️ AIDA-Affiliate (PVN)", d_pvn), ("▶️ " + yt_lbl, yt_v)]
+        if lex_v is not None:
+            rows.append(("🧾 Lexware fakturiert", lex_v))
+        return [(lbl, _eur(v or 0.0)) for lbl, v in rows]
 
     wt = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
     cap = f"{wt[today.weekday()]}, {today.strftime('%d.%m.%Y')}"
@@ -157,16 +171,20 @@ def fetch() -> ConnectorResult:
                    "Festbuchungen aus der Kreuzfahrtstudio-Excel. Optionen = PIPELINE, nicht enthalten.")
     bands = [
         {"label": "🎯 Erfolg heute", "value": _eur(e_heute), "sub": cap,
-         "help": erfolg_help, "variant": ""},
+         "help": erfolg_help, "variant": "",
+         "breakdown": _bd(fp_h, land_h, digi_h, awin_h, pvn_h, yt_day, "YouTube (Ø-Tag)")},
         {"label": "Erfolg gestern", "value": _eur(e_gestern),
          "sub": f"{wt[gestern.weekday()]}, {gestern.strftime('%d.%m.%Y')}",
-         "help": erfolg_help, "variant": "erfolg-band--prev"},
+         "help": erfolg_help, "variant": "erfolg-band--prev",
+         "breakdown": _bd(fp_g, land_g, digi_g, awin_g, pvn_g, yt_day, "YouTube (Ø-Tag)")},
         {"label": "Erfolg 7 Tage", "value": _eur(e_7d),
          "sub": f"{d7.strftime('%d.%m.')} – {today.strftime('%d.%m.')}",
-         "help": erfolg_help, "variant": "erfolg-band--prev"},
+         "help": erfolg_help, "variant": "erfolg-band--prev",
+         "breakdown": _bd(fp_7, land_7, digi_7, awin_7, pvn_7, yt_7)},
         {"label": "Erfolg 30 Tage", "value": _eur(e_30d),
          "sub": f"{d30.strftime('%d.%m.')} – {today.strftime('%d.%m.')}",
-         "help": erfolg_help, "variant": "erfolg-band--prev"},
+         "help": erfolg_help, "variant": "erfolg-band--prev",
+         "breakdown": _bd(fp_30, land_30, digi_30, awin_30, pvn_30, yt_30, lex_v=lex_30d)},
     ]
 
     # BEREICH 1 „Buchungen & Optionen" -------------------------------------
