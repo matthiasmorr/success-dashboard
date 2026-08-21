@@ -35,8 +35,9 @@ PROVISION_SATZ = float(os.getenv("KREUZFAHRTSTUDIO_PROVISION", "0.065"))        
 PROVISION_SATZ_NEU = float(os.getenv("KREUZFAHRTSTUDIO_PROVISION_NEU", "0.075"))  # ab 01.07.2026
 PROVISION_AB = date.fromisoformat(os.getenv("KREUZFAHRTSTUDIO_PROVISION_AB", "2026-07-01"))
 # Fenster (Kalendertage inkl. Cutoff) für den Ø-Tag, mit dem der Export-Verzug
-# überbrückt wird – 8 Tage, d.h. Cutoff 18.08. → Fenster 11.–18.08.
-SCHNITT_FENSTER = int(os.getenv("KREUZFAHRTSTUDIO_SCHNITT_FENSTER", "8"))
+# überbrückt wird – volle Woche, d.h. Cutoff 18.08. → Fenster 12.–18.08. Genau 7 Tage,
+# damit jeder Wochentag exakt einmal einfließt (gebucht wird werktags deutlich mehr).
+SCHNITT_FENSTER = int(os.getenv("KREUZFAHRTSTUDIO_SCHNITT_FENSTER", "7"))
 
 
 def provision_satz(d: date) -> float:
@@ -320,8 +321,9 @@ def tagesschnitt(rows: list[tuple[date, float]], cutoff: date | None,
 
     Die Excel hinkt ein paar Tage hinterher (Cutoff = jüngstes Buchungsdatum). Für die
     Tage danach gibt es noch keine Zahlen, die Kacheln stünden auf 0 €. Statt der Null
-    rechnen wir den Durchschnitt der letzten `fenster` Kalendertage VOR dem Cutoff hoch
-    (z.B. Cutoff 18.08. → Fenster 11.–18.08.) und schreiben ihn den offenen Tagen gut.
+    rechnen wir den Durchschnitt der letzten `fenster` Kalendertage bis zum Cutoff hoch
+    (Default eine volle Woche, z.B. Cutoff 18.08. → Fenster 12.–18.08.) und schreiben
+    ihn den offenen Tagen gut.
 
     Bewusst durch die Kalendertage geteilt (nicht durch die Tage MIT Buchung) – gebucht
     wird nicht jeden Tag, ein Ø über nur die Buchungstage würde deutlich übertreiben.
