@@ -79,6 +79,10 @@ def fetch() -> ConnectorResult:
     #  Monat deutlich vollständiger abbildet als die Mail-Klassifikation.)
     if ks_cutoff:
         ks_cutoff = min(ks_cutoff, today)
+    # Ø-Tag als Brücke über den Export-Verzug: die Excel ist meist ein paar Tage alt,
+    # die Tage danach stünden sonst auf 0 €. Sie bekommen stattdessen den Durchschnitt
+    # des letzten Excel-Fensters gutgeschrieben (Details in kreuzfahrtstudio.tagesschnitt).
+    ks_schnitt = kreuzfahrtstudio.tagesschnitt(ok_rows, ks_cutoff)
     led = _safe(ledger.summary) if graph.configured() else None
     land = _safe(landausfluege.summary) if graph.configured() else None
     yt = _safe(youtube_revenue.summary) if youtube_revenue.configured() else None
@@ -119,10 +123,29 @@ def fetch() -> ConnectorResult:
         return sum(v * kreuzfahrtstudio.provision_satz(d)
                    for d, v in fest_entries if start <= d <= end)
 
+    def _offene_tage(start, end):
+        """Tage im Fenster, die hinter dem Excel-Export-Stand liegen (höchstens bis heute).
+        Ist die Excel aktuell (Cutoff = heute), sind es 0 – die Hochrechnung schaltet
+        sich dann von selbst ab."""
+        if not ks_cutoff:
+            return 0
+        a, b = max(start, ks_cutoff + timedelta(days=1)), min(end, today)
+        return max(0, (b - a).days + 1)
+
+    def _est_prov(start, end):
+        """Hochgerechnete Provision für die noch nicht exportierten Tage des Fensters."""
+        return _offene_tage(start, end) * ks_schnitt["prov_tag"] if ks_schnitt else 0.0
+
+    def _est_vol(start, end):
+        """Hochgerechnetes Buchungsvolumen für die noch nicht exportierten Tage."""
+        return _offene_tage(start, end) * ks_schnitt["vol_tag"] if ks_schnitt else 0.0
+
     # Festbuchungen heute / laufender Monat – HYBRID (Excel autoritativ ≤ Cutoff, Mails danach),
     # damit die Kacheln mit der Excel abgeglichen sind (nicht nur Mail-Recall).
     festwert_heute_h, n_fest_heute_h = _festwert(today, today), _festcount(today, today)
     festwert_monat_h, n_fest_monat_h = _festwert(month_start, today), _festcount(month_start, today)
+    festwert_heute_h += _est_vol(today, today)
+    festwert_monat_h += _est_vol(month_start, today)
 
     def _erfolg(fest_prov, land_prov, d_digi, d_awin, d_pvn, yt_val):
         return ((fest_prov or 0) + (land_prov or 0) + (d_digi or 0) + (d_awin or 0)
@@ -134,6 +157,10 @@ def fetch() -> ConnectorResult:
     # in Lexware, ein separater Einnahmestrom.
     fp_h, fp_g = _festprov(today, today), _festprov(gestern, gestern)
     fp_7, fp_30 = _festprov(d7, today), _festprov(d30, today)
+    # Hochrechnung für die Tage nach dem Export-Stand – in der Aufstellung eigene Zeile,
+    # damit sichtbar bleibt, was aus der Excel kommt und was geschätzt ist.
+    est_h, est_g = _est_prov(today, today), _est_prov(gestern, gestern)
+    est_7, est_30 = _est_prov(d7, today), _est_prov(d30, today)
     land_h = land["today_prov"] if land else 0.0
     land_g = land["yesterday_prov"] if land else 0.0
     land_7 = land["prov_7d"] if land else 0.0
@@ -145,20 +172,30 @@ def fetch() -> ConnectorResult:
     yt_7 = yt["rev_7d"] if yt else 0.0   # 7/30 T.: echte YouTube-Umsätze
     yt_30 = yt["rev_30d"] if yt else 0.0
 
-    e_heute = _erfolg(fp_h, land_h, digi_h, awin_h, pvn_h, yt_day)
-    e_gestern = _erfolg(fp_g, land_g, digi_g, awin_g, pvn_g, yt_day)
-    e_7d = _erfolg(fp_7, land_7, digi_7, awin_7, pvn_7, yt_7)
+    e_heute = _erfolg(fp_h + est_h, land_h, digi_h, awin_h, pvn_h, yt_day)
+    e_gestern = _erfolg(fp_g + est_g, land_g, digi_g, awin_g, pvn_g, yt_day)
+    e_7d = _erfolg(fp_7 + est_7, land_7, digi_7, awin_7, pvn_7, yt_7)
     # Lexware-Einnahmen (fakturiert, monatlich/laggy) NUR ins 30-Tage-Band
-    e_30d = _erfolg(fp_30, land_30, digi_30, awin_30, pvn_30, yt_30) + lex_30d
+    e_30d = _erfolg(fp_30 + est_30, land_30, digi_30, awin_30, pvn_30, yt_30) + lex_30d
 
-    def _bd(fest_p, land_p, d_digi, d_awin, d_pvn, yt_v, yt_lbl="YouTube", lex_v=None):
-        """Aufstellung der Bestandteile – klappt in der Hero-Reihe per Klick auf."""
-        rows = [("🚢 Buchungsprovision", fest_p), ("🏝️ Landausflüge", land_p),
-                ("🛒 Digistore", d_digi), ("🔗 Awin", d_awin),
-                ("🅰️ AIDA-Affiliate (PVN)", d_pvn), ("▶️ " + yt_lbl, yt_v)]
+    def _bd(fest_p, land_p, d_digi, d_awin, d_pvn, yt_v, yt_lbl="YouTube", lex_v=None,
+            est_p=0.0):
+        """Aufstellung der Bestandteile – klappt in der Hero-Reihe per Klick auf.
+        `est_p` (Ø-Hochrechnung für die Tage nach dem Excel-Stand) bekommt eine eigene
+        Zeile, damit Excel-Wahrheit und Schätzung nicht verschwimmen."""
+        rows = [("🚢 Buchungsprovision", fest_p)]
+        if est_p:
+            rows.append((_est_lbl, est_p))
+        rows += [("🏝️ Landausflüge", land_p),
+                 ("🛒 Digistore", d_digi), ("🔗 Awin", d_awin),
+                 ("🅰️ AIDA-Affiliate (PVN)", d_pvn), ("▶️ " + yt_lbl, yt_v)]
         if lex_v is not None:
             rows.append(("🧾 Lexware fakturiert", lex_v))
         return [(lbl, _eur(v or 0.0)) for lbl, v in rows]
+
+    _est_lbl = "📊 Ø-Hochrechnung"
+    if ks_schnitt and ks_cutoff:
+        _est_lbl = (f"📊 Ø-Hochrechnung ab {(ks_cutoff + timedelta(days=1)).strftime('%d.%m.')}")
 
     wt = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
     cap = f"{wt[today.weekday()]}, {today.strftime('%d.%m.%Y')}"
@@ -169,22 +206,32 @@ def fetch() -> ConnectorResult:
                    "Awin + AIDA-Affiliate (PVN) + YouTube. Im 30-Tage-Band zusätzlich die fakturierten "
                    "Einnahmen aus Lexware (AIDA-Newsletter-Werbung, Sponsoren, Amazon, Meta …). "
                    "Festbuchungen aus der Kreuzfahrtstudio-Excel. Optionen = PIPELINE, nicht enthalten.")
+    if ks_schnitt:
+        erfolg_help += (
+            f" Die Excel reicht bis {ks_schnitt['end'].strftime('%d.%m.')}; für die Tage danach "
+            f"zählt der Ø-Tag aus {ks_schnitt['start'].strftime('%d.%m.')}–"
+            f"{ks_schnitt['end'].strftime('%d.%m.')} "
+            f"({_eur(ks_schnitt['prov_tag'])}/Tag, {ks_schnitt['n']} Buchungen im Fenster) – "
+            "Schätzung, die der nächste Export ersetzt.")
     bands = [
         {"label": "🎯 Erfolg heute", "value": _eur(e_heute), "sub": cap,
          "help": erfolg_help, "variant": "",
-         "breakdown": _bd(fp_h, land_h, digi_h, awin_h, pvn_h, yt_day, "YouTube (Ø-Tag)")},
+         "breakdown": _bd(fp_h, land_h, digi_h, awin_h, pvn_h, yt_day, "YouTube (Ø-Tag)",
+                          est_p=est_h)},
         {"label": "Erfolg gestern", "value": _eur(e_gestern),
          "sub": f"{wt[gestern.weekday()]}, {gestern.strftime('%d.%m.%Y')}",
          "help": erfolg_help, "variant": "erfolg-band--prev",
-         "breakdown": _bd(fp_g, land_g, digi_g, awin_g, pvn_g, yt_day, "YouTube (Ø-Tag)")},
+         "breakdown": _bd(fp_g, land_g, digi_g, awin_g, pvn_g, yt_day, "YouTube (Ø-Tag)",
+                          est_p=est_g)},
         {"label": "Erfolg 7 Tage", "value": _eur(e_7d),
          "sub": f"{d7.strftime('%d.%m.')} – {today.strftime('%d.%m.')}",
          "help": erfolg_help, "variant": "erfolg-band--prev",
-         "breakdown": _bd(fp_7, land_7, digi_7, awin_7, pvn_7, yt_7)},
+         "breakdown": _bd(fp_7, land_7, digi_7, awin_7, pvn_7, yt_7, est_p=est_7)},
         {"label": "Erfolg 30 Tage", "value": _eur(e_30d),
          "sub": f"{d30.strftime('%d.%m.')} – {today.strftime('%d.%m.')}",
          "help": erfolg_help, "variant": "erfolg-band--prev",
-         "breakdown": _bd(fp_30, land_30, digi_30, awin_30, pvn_30, yt_30, lex_v=lex_30d)},
+         "breakdown": _bd(fp_30, land_30, digi_30, awin_30, pvn_30, yt_30, lex_v=lex_30d,
+                          est_p=est_30)},
     ]
 
     # BEREICH 1 „Buchungen & Optionen" -------------------------------------
@@ -192,21 +239,37 @@ def fetch() -> ConnectorResult:
     _cut_str = ks_cutoff.strftime("%d.%m.%Y") if ks_cutoff else "—"
     if fest_entries:
         _satz_h = kreuzfahrtstudio.provision_satz(today) * 100
-        buchungen.append(Metric("Buchungsprovision heute", _eur(_festprov(today, today)),
-                                delta=f"{str(_satz_h).rstrip('0').rstrip('.').replace('.', ',')} %",
+        _satz_str = str(_satz_h).rstrip("0").rstrip(".").replace(".", ",")
+        # Liegt der Tag hinter dem Export-Stand, steht in den Kacheln der Ø-Tag – dieselbe
+        # Zahl wie im Hero. Der Chip sagt, dass es eine Hochrechnung ist.
+        _est_chip = (f"≈ Ø {ks_schnitt['start'].strftime('%d.%m.')}–{ks_schnitt['end'].strftime('%d.%m.')}"
+                     if ks_schnitt else "≈ Ø-Tag")
+        _est_help = (f" Heute liegt hinter dem Export-Stand ({_cut_str}) – gezeigt wird der "
+                     f"Ø-Tag aus {ks_schnitt['start'].strftime('%d.%m.')}–"
+                     f"{ks_schnitt['end'].strftime('%d.%m.')}, den der nächste Export ersetzt."
+                     if ks_schnitt else "")
+        buchungen.append(Metric("Buchungsprovision heute", _eur(fp_h + est_h),
+                                delta=(_est_chip if est_h else f"{_satz_str} %"),
                                 delta_color="off",
                                 help=f"Provision aus den heutigen Festbuchungen "
-                                     f"({str(_satz_h).rstrip('0').rstrip('.').replace('.', ',')} % auf den Reisepreis)."))
+                                     f"({_satz_str} % auf den Reisepreis)." + (_est_help if est_h else "")))
         buchungen.append(Metric("Festbuchungen heute", _eur(festwert_heute_h),
-                                delta=f"{n_fest_heute_h} " + ("Vorgang" if n_fest_heute_h == 1 else "Vorgänge"),
+                                delta=(_est_chip if est_h else
+                                       f"{n_fest_heute_h} " + ("Vorgang" if n_fest_heute_h == 1 else "Vorgänge")),
                                 delta_color="off",
                                 help=f"Feste Buchungen mit Buchungsdatum heute. Quelle: Kreuzfahrtstudio-Excel "
-                                     f"(Export-Stand {_cut_str}) – neuere Tage erscheinen nach dem nächsten Excel-Update."))
+                                     f"(Export-Stand {_cut_str}) – neuere Tage erscheinen nach dem nächsten Excel-Update."
+                                     + (_est_help if est_h else "")))
+        _monat_est = _est_prov(month_start, today)
+        _monat_delta = f"{n_fest_monat_h} " + ("Vorgang" if n_fest_monat_h == 1 else "Vorgänge")
+        if _monat_est:
+            _monat_delta += f" + {_offene_tage(month_start, today)} T. Ø"
         buchungen.append(Metric("Festbuchungen Monat", _eur(festwert_monat_h),
-                                delta=f"{n_fest_monat_h} " + ("Vorgang" if n_fest_monat_h == 1 else "Vorgänge"),
-                                delta_color="off",
+                                delta=_monat_delta, delta_color="off",
                                 help=f"Feste Buchungen im laufenden Monat aus der Kreuzfahrtstudio-Excel "
-                                     f"(Export-Stand {_cut_str}). Abgeglichen mit der Excel, nicht aus den Mails."))
+                                     f"(Export-Stand {_cut_str}). Abgeglichen mit der Excel, nicht aus den Mails."
+                                     + (f" Die {_offene_tage(month_start, today)} Tage nach dem Export-Stand "
+                                        f"sind mit dem Ø-Tag hochgerechnet." if _monat_est else "")))
     if led is not None:
         nopt = led["n_option_heute"]
         buchungen.append(Metric("Neue Optionen heute", _eur(led["option_value_heute"]),

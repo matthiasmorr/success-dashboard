@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import io
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
@@ -34,6 +34,9 @@ CAT = Category.EINNAHMEN
 PROVISION_SATZ = float(os.getenv("KREUZFAHRTSTUDIO_PROVISION", "0.065"))        # bis 30.06.2026
 PROVISION_SATZ_NEU = float(os.getenv("KREUZFAHRTSTUDIO_PROVISION_NEU", "0.075"))  # ab 01.07.2026
 PROVISION_AB = date.fromisoformat(os.getenv("KREUZFAHRTSTUDIO_PROVISION_AB", "2026-07-01"))
+# Fenster (Kalendertage inkl. Cutoff) für den Ø-Tag, mit dem der Export-Verzug
+# überbrückt wird – 8 Tage, d.h. Cutoff 18.08. → Fenster 11.–18.08.
+SCHNITT_FENSTER = int(os.getenv("KREUZFAHRTSTUDIO_SCHNITT_FENSTER", "8"))
 
 
 def provision_satz(d: date) -> float:
@@ -309,3 +312,30 @@ def fetch() -> ConnectorResult:
         return compute(df)
     except Exception as e:  # noqa: BLE001
         return ConnectorResult.failed(NAME, CAT, str(e))
+
+
+def tagesschnitt(rows: list[tuple[date, float]], cutoff: date | None,
+                 fenster: int = SCHNITT_FENSTER) -> dict | None:
+    """Ø-Tag aus dem letzten Excel-Fenster – Brücke über den Export-Verzug.
+
+    Die Excel hinkt ein paar Tage hinterher (Cutoff = jüngstes Buchungsdatum). Für die
+    Tage danach gibt es noch keine Zahlen, die Kacheln stünden auf 0 €. Statt der Null
+    rechnen wir den Durchschnitt der letzten `fenster` Kalendertage VOR dem Cutoff hoch
+    (z.B. Cutoff 18.08. → Fenster 11.–18.08.) und schreiben ihn den offenen Tagen gut.
+
+    Bewusst durch die Kalendertage geteilt (nicht durch die Tage MIT Buchung) – gebucht
+    wird nicht jeden Tag, ein Ø über nur die Buchungstage würde deutlich übertreiben.
+    """
+    if not rows or cutoff is None:
+        return None
+    start = cutoff - timedelta(days=fenster - 1)
+    sel = [(d, v) for d, v in rows if start <= d <= cutoff]
+    if not sel:
+        return None
+    vol = sum(v for _, v in sel)
+    prov = sum(v * provision_satz(d) for d, v in sel)
+    return {
+        "start": start, "end": cutoff, "tage": fenster, "n": len(sel),
+        "volumen": vol, "provision": prov,
+        "vol_tag": vol / fenster, "prov_tag": prov / fenster,
+    }
