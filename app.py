@@ -23,7 +23,7 @@ from urllib.parse import quote, urlencode
 import streamlit as st
 from dotenv import load_dotenv
 
-from connectors import ALL_CONNECTORS, Category, snapshot
+from connectors import ALL_CONNECTORS, Category, snapshot, webform
 from connectors.digistore import _euro
 
 # Zeitzone fest auf Europe/Berlin – der Cloud-Server läuft sonst in UTC (2h Versatz
@@ -233,17 +233,36 @@ st.markdown(
     .bk-date { color:#9a9ac0; font-size:.82rem; }
 
     /* ===================== Postfach-Aktivität ===================== */
-    .act-list { margin:4px 0 14px; display:flex; flex-direction:column; gap:8px; }
-    .act-row { border:1px solid #e7e6f7; border-left:4px solid #3636D9; border-radius:11px; padding:11px 14px; background:#fff; }
-    .act-problem { border-left-color:#d98a1f; background:#fff8ef; }
-    .act-out { border-left-color:#3a8a3a; background:#f5fbf5; }
-    .act-flag { font-size:.64rem; font-weight:700; color:#2f7a2f; background:#e4f3e4; border-radius:999px; padding:1px 8px; }
-    .act-head { display:flex; align-items:center; gap:8px; }
-    .act-kontakt { font-weight:700; color:#1B1B6D; }
-    .act-date { color:#9a9ac0; font-size:.82rem; }
-    .act-betreff { color:#9a9ac0; font-size:.82rem; margin:2px 0 3px; }
-    .act-text { color:#3a3a5a; font-size:.88rem; line-height:1.35; }
-    .act-reply { color:#2f7a2f; font-weight:700; }
+    /* Gleicher Karten-Aufbau wie die CRM-Liste unten (Kopf → Kontakt → Inhalt →
+       Betreff), inkl. der .ld-flag-Pillen – auf dem Handy ist das der Unterschied
+       zwischen „auf einen Blick erfassbar" und einer grauen Textwand. */
+    .act-list { margin:4px 0 14px; display:flex; flex-direction:column; gap:9px; }
+    .act-row { border:1px solid #e7e6f7; border-left:4px solid #d8d6f0; border-radius:12px;
+        padding:12px 15px; background:#fff; }
+    .act-row.anfrage { border-left-color:#3636D9; }
+    .act-row.act-problem { border-left-color:#d98a1f; background:#fff8ef; }
+    .act-row.act-out { border-left-color:#3a8a3a; background:#f5fbf5; }
+    .act-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .act-kontakt { font-weight:700; color:#1B1B6D; font-size:.98rem; }
+    .act-date { color:#9a9ac0; font-size:.78rem; margin-left:auto; white-space:nowrap; }
+    .act-meta { color:#9a9ac0; font-size:.78rem; margin:4px 0 0; display:flex; gap:10px; flex-wrap:wrap; }
+    .act-meta a { color:#5a5a86; text-decoration:none; }
+    .act-meta a:hover { text-decoration:underline; }
+    /* Deckel gegen Ausreißer: KI-Zusammenfassungen sind 3 Sätze, ein Roh-Text-Fallback
+       füllt sonst den halben Handy-Bildschirm. */
+    .act-text { margin-top:7px; padding:8px 11px; background:#f8f7fd; border-radius:9px;
+        color:#3a3a5a; font-size:.84rem; line-height:1.45; }
+    .act-reply { margin-top:6px; padding:8px 11px; background:#eff7ef; border-radius:9px;
+        color:#336033; font-size:.84rem; line-height:1.45; }
+    /* Der Deckel sitzt INNEN: mit Clamp auf der gepolsterten Box lugt sonst die
+       angeschnittene nächste Zeile ins Padding. */
+    .act-text span, .act-reply span { display:-webkit-box; -webkit-box-orient:vertical;
+        overflow:hidden; }
+    .act-text span { -webkit-line-clamp:5; }
+    .act-reply span { -webkit-line-clamp:3; }
+    .act-reply b { color:#2f7a2f; }
+    .act-betreff { color:#9a9ac0; font-size:.78rem; margin-top:6px;
+        overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
     /* ===================== Sales-Leads (CRM-Liste) ===================== */
     .ld-list { margin:4px 0 14px; display:flex; flex-direction:column; gap:9px; }
@@ -730,24 +749,41 @@ def _activity_list(items):
         outs = [x for x in g if x.get("direction") == "out"]
         answered = bool(outs)
         problem = any(x.get("problem") for x in ins) and not answered
-        cls = "act-out" if answered else ("act-problem" if problem else "")
-        lead = "✅ " if answered else ("⚠️ " if problem else "")
-        flag = '<span class="act-flag">beantwortet</span>' if answered else ""
+        anfrage = any(x.get("anfrage") for x in ins)
+        cls = ("act-out" if answered else "act-problem" if problem
+               else "anfrage" if anfrage else "")
+        # Status als Pillen statt als Emoji-Präfix – dieselben .ld-flag-Farben wie im CRM
+        flags = ""
+        if problem:
+            flags += '<span class="ld-flag f-wartet">⚠️ offen</span>'
+        if anfrage:
+            flags += '<span class="ld-flag f-anfrage">Reiseanfrage</span>'
+        if answered:
+            flags += '<span class="ld-flag f-kit">✅ beantwortet</span>'
         iso, hhmm = max(((x.get("date", ""), x.get("time", "")) for x in g), default=("", ""))
         tag = f"{iso[8:10]}.{iso[5:7]}." if len(iso) >= 10 else ""
         if tag and hhmm:
             tag += f" · {hhmm}"   # letzte Aktivität des Tages
         betreff = (ins[0].get("betreff") if ins else g[0].get("betreff", "")) or ""
-        lines = [esc(x.get("text", "")) for x in ins if x.get("text")]
-        lines += ['<span class="act-reply">↗️ Antwort:</span> ' + esc(x.get("text", ""))
-                  for x in outs if x.get("text")]
-        body = "<br>".join(lines)
+        # Direkt-Kontakt wie im CRM: Antworten geht vom Handy aus mit einem Tipp
+        addr = next((x["addr"] for x in ins + outs if x.get("addr")), "")
+        meta = ""
+        if addr:
+            href = f'mailto:{quote(addr)}' + (
+                "?subject=" + quote("Re: " + betreff) if betreff else "")
+            meta = f'<div class="act-meta"><a href="{href}">✉️ {esc(addr)}</a></div>'
+        text = "<br>".join(esc(x.get("text", "")) for x in ins if x.get("text"))
+        antwort = "<br>".join(esc(x.get("text", "")) for x in outs if x.get("text"))
+        body = f'<div class="act-text"><span>{text}</span></div>' if text else ""
+        if antwort:
+            body += ('<div class="act-reply"><span><b>↗️ Antwort:</b> '
+                     f'{antwort}</span></div>')
         rows.append(
             f'<div class="act-row {cls}">'
-            f'<div class="act-head">{lead}<span class="act-kontakt">{esc(kontakt)}</span>'
-            f'{flag}<span class="act-date">{tag}</span></div>'
-            f'<div class="act-betreff">{esc(betreff)}</div>'
-            f'<div class="act-text">{body}</div></div>')
+            f'<div class="act-head"><span class="act-kontakt">{esc(kontakt)}</span>'
+            f'{flags}<span class="act-date">{tag}</span></div>'
+            f'{meta}{body}'
+            f'<div class="act-betreff">{esc(betreff)}</div></div>')
     return '<div class="act-list">' + "".join(rows) + "</div>"
 
 
@@ -878,28 +914,15 @@ _LEAD_FILTER = {
     "nokit": ("📭 Nicht im Morrletter", lambda x: not x["kit_state"]),
     "vorgang": ("🚢 Mit Vorgang", lambda x: bool(x["vorgang"])),
 }
-# Formularfelder, die in der Wunsch-Zeile erscheinen (Reihenfolge = Anzeige)
-_WISH = [("ziel", "🧭"), ("dauer", "⏱️"), ("kabine", "🛏️"), ("reederei", "🚢"),
-         ("flughafen", "✈️")]
 
 
 def _lead_wish(f):
-    """Eine Zeile „Ziel · Dauer · Kabine …" aus den Formularfeldern der Reiseanfrage."""
-    bits = [f"{icon} {esc(f[key])}" for key, icon in _WISH if f.get(key)]
-    pers = []
-    if f.get("erwachsene"):
-        pers.append(f'{esc(f["erwachsene"])} Erw.')
-    if f.get("kinder"):
-        pers.append(f'{esc(f["kinder"])} Kind' + ("er" if f["kinder"].strip() != "1" else ""))
-    if pers:
-        bits.append("👥 " + " + ".join(pers))
-    if f.get("von") or f.get("bis"):
-        def _d(s):
-            return f"{s[8:10]}.{s[5:7]}.{s[2:4]}" if len(s or "") >= 10 else esc(s or "")
-        bits.append(f'📅 {_d(f.get("von", ""))} – {_d(f.get("bis", ""))}')
-    if f.get("budget"):
-        bits.append(f'💶 {esc(f["budget"])}')
-    return " · ".join(bits)
+    """Eine Zeile „Ziel · Dauer · Kabine …" aus den Formularfeldern der Reiseanfrage.
+
+    Dieselbe Funktion baut die Zeile in der Postfach-Aktivität – die beiden Listen
+    sollen dieselbe Anfrage identisch zeigen.
+    """
+    return esc(webform.wish_line(f))
 
 
 def _leads_html():

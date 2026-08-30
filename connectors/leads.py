@@ -23,9 +23,9 @@ from datetime import date, datetime, timedelta, timezone
 
 import requests
 
-from . import graph, ledger
+from . import graph, ledger, webform
 from .base import Category, ConnectorResult, Metric
-from .postfach_summary import _full_name, _generic_name, _name_parts
+from .postfach_summary import _form_name, _full_name, _generic_name, _name_parts
 
 NAME = "Sales-Leads"
 CAT = Category.LEADS
@@ -33,7 +33,6 @@ CAT = Category.LEADS
 DAYS = int(os.getenv("LEADS_DAYS", "30"))
 FOLDERS = ("Posteingang", "Reisebuchungen", "Anfragen")
 SENT_FOLDER = "Gesendete Elemente"
-FORM_SENDER = "formresponses@netlify.com"   # Website-Formular (Netlify) – Kunde steht im Reply-To
 
 # Automaten und interne/geschäftliche Gegenstellen sind keine Leads
 SKIP_ADDR = re.compile(r"no-?reply|no_reply|donotreply|mailer-daemon|postmaster|bounce", re.I)
@@ -56,69 +55,8 @@ _SELECT_IN = ("subject,from,replyTo,receivedDateTime,body,conversationId")
 _SELECT_OUT = ("subject,toRecipients,receivedDateTime,sentDateTime,conversationId")
 
 
-# ===================== Website-Formular auslesen =====================
-# Reihenfolge = Reihenfolge im Formular; der Wert eines Feldes ist der Text bis
-# zum nächsten bekannten Label. Rein textbasiert, keine KI nötig.
-# `_P` = optionaler Klammerzusatz, der selbst Doppelpunkte enthalten darf
-# („Alter der Kinder (bei mehreren: durch Komma trennen):").
-_P = r"\s*(?:\([^)]*\))?\s*:"
-_FORM_LABELS: list[tuple[str, str]] = [
-    ("ziel", r"Gew(?:ü|ue)nschtes Reiseziel\s*\*?" + _P),
-    ("dauer", r"Reisedauer\s*\*?" + _P),
-    ("budget", r"Gibt es ein Gesamtbudget\?" + _P),
-    ("von", r"Fr(?:ü|ue)heste Anreise\s*:"),
-    ("bis", r"Sp(?:ä|ae)teste Abreise\s*:"),
-    ("reederei", r"Wunschreederei" + _P),
-    ("flughafen", r"Abflughafen" + _P),
-    ("kabine", r"Kabinenkategorie\s*\*?" + _P),
-    ("erwachsene", r"Anzahl Erwachsene\s*\*?" + _P),
-    ("kinder", r"Anzahl Kinder" + _P),
-    ("kinderalter", r"Alter der Kinder" + _P),
-    ("bedarfsanalyse", r"Ergebnisse Bedarfsanalyse\s*:"),
-    ("erfahrung", r"Schon Mal Kreuzfahrt Gemacht\s*:"),
-    ("gut", r"Bei welcher Reederei hat es dir gut gefallen\?"),
-    ("schlecht", r"Bei welcher Reederei hat es dir nicht so gut gefallen\?"),
-    ("neue_reedereien", r"Offen F(?:ü|ue)r Neue Reedereien\s*:"),
-    # Restliche Felder werden nicht angezeigt, müssen aber als Label bekannt sein –
-    # sonst rutscht der halbe Formular-Rumpf in den Wert des Vorgängerfeldes.
-    ("w_sprache", r"Wichtig\s*:\s*Deutsche Sprache An Bord\s*:"),
-    ("w_inklusive", r"Wichtig\s*:\s*Viel Im Preis Inklusive\s*:"),
-    ("w_kinder", r"Wichtig\s*:\s*Angebot F(?:ü|ue)r Kinder\s*:"),
-    ("stil", r"Preis Oder Luxus\s*:"),
-    ("bordtag", r"Perfekter Tag An Bord\s*:"),
-    ("schiffsgroesse", r"Schiffsgr(?:ö|oe)(?:ß|ss)e\s*:"),
-    ("anreise", r"Anreise\s*:"),
-    ("seetage", r"H(?:ä|ae)fen Oder Seetage\s*:"),
-    ("kunde", r"Name\s*\*\s*:"),
-    ("telefon", r"Telefon\s*\*?\s*:"),
-    ("mail", r"E-?Mail\s*\*\s*:"),
-    ("kontaktweg", r"Wie sollen wir dich kontaktieren\?"),
-    ("wunsch", r"W(?:ü|ue)nsche, Anmerkungen und Fragen\s*:"),
-    ("datenschutz", r"Datenschutzerkl(?:ä|ae)rung Akzeptiert\s*:"),
-]
-_FORM_RE = re.compile("|".join(f"(?P<{k}>{p})" for k, p in _FORM_LABELS), re.I)
-
-
-def _plain(html_text: str) -> str:
-    """HTML → Fließtext (wie im Postfach-Summary, hier ohne KI weiterverarbeitet)."""
-    t = re.sub(r"<(style|script)[^>]*>.*?</\1>", " ", html_text or "", flags=re.S | re.I)
-    t = re.sub(r"<[^>]+>", " ", t)
-    t = (t.replace("&nbsp;", " ").replace("&amp;", "&").replace("&gt;", ">")
-          .replace("&lt;", "<").replace("&euro;", "€").replace("&#8364;", "€"))
-    return re.sub(r"\s+", " ", t).strip()
-
-
-def _form_fields(text: str) -> dict:
-    """Formularfelder der Website-Reiseanfrage als Dict (leere Felder fliegen raus)."""
-    hits = list(_FORM_RE.finditer(text or ""))
-    out: dict[str, str] = {}
-    for i, m in enumerate(hits):
-        key = m.lastgroup
-        end = hits[i + 1].start() if i + 1 < len(hits) else len(text)
-        val = text[m.end():end].strip(" .;–—-")
-        if val and key and key not in out:
-            out[key] = val[:160]
-    return out
+# ===================== Website-Formular =====================
+# Feld-Parser + Wunsch-Zeile liegen in `webform` (teilt sich die Postfach-Aktivität).
 
 
 def _budget_eur(form: dict) -> float:
@@ -127,23 +65,6 @@ def _budget_eur(form: dict) -> float:
     nums = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", raw)]
     nums = [n for n in nums if n >= 100]     # „2 Pers." o.ä. ist kein Budget
     return max(nums) if nums else 0.0
-
-
-_MAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
-
-
-def _clean_mail(v: str | None) -> str:
-    """Adresse aus einem Formularwert – der HTML→Text-Schritt streut Leerzeichen ein
-    („henning_ahrens@ web.de"), was sonst einen zweiten Kontakt derselben Person ergibt."""
-    m = _MAIL_RE.search((v or "").replace(" ", ""))
-    return m.group(0).lower() if m else ""
-
-
-def _form_name(subject: str) -> str:
-    """Name aus dem Formular-Betreff: „Reiseanfrage ⚓ Ziel — 2 Erw. — Erika Muster"."""
-    parts = [p.strip() for p in re.split(r"[—–]", subject or "") if p.strip()]
-    return parts[-1] if len(parts) >= 2 and _full_name(parts[-1]) else ""
-
 
 # ===================== Kit (ConvertKit) =====================
 def _kit_cache() -> dict:
@@ -247,13 +168,13 @@ def _collect(days: int) -> dict[str, dict]:
             ea = ((m.get("from") or {}).get("emailAddress") or {})
             addr, disp = (ea.get("address") or "").lower(), ea.get("name") or ""
             subject = m.get("subject", "") or ""
-            body = _plain((m.get("body") or {}).get("content", ""))
+            body = webform.plain((m.get("body") or {}).get("content", ""))
             form: dict = {}
-            if addr == FORM_SENDER or "reiseanfrage" in subject.lower():
+            if webform.is_form(addr, subject):
                 # Website-Formular: echte Kundenadresse steht im Reply-To
                 rt = (m.get("replyTo") or [{}])[0].get("emailAddress") or {}
-                form = _form_fields(body)
-                addr = ((rt.get("address") or "").lower() or _clean_mail(form.get("mail"))
+                form = webform.fields(body)
+                addr = ((rt.get("address") or "").lower() or webform.clean_mail(form.get("mail"))
                         or addr)
                 disp = form.get("kunde") or _form_name(subject) or rt.get("name") or disp
             if _skip(addr):

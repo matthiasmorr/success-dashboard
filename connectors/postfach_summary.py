@@ -18,7 +18,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
-from . import graph
+from . import graph, webform
 
 CACHE_PATH = os.getenv("POSTFACH_SUMMARY_CACHE", "data/postfach_summary_cache.json")
 MODEL = "claude-haiku-4-5-20251001"
@@ -26,7 +26,7 @@ FOLDERS = ("Posteingang", "Reisebuchungen", "Anfragen")   # eingehende Kunden-Ma
 SENT_FOLDER = "Gesendete Elemente"                          # ausgehende Antworten
 DAYS = 7
 MAX_ITEMS = 80
-_SELECT = ("subject,from,toRecipients,receivedDateTime,sentDateTime,"
+_SELECT = ("subject,from,replyTo,toRecipients,receivedDateTime,sentDateTime,"
            "bodyPreview,body,conversationId")
 # Automatische System-/Benachrichtigungs-Absender (kein echter Kunden-Vorgang) – rausfiltern
 SKIP_SENDERS = re.compile(r"no-?reply|no_reply|donotreply|mailer-daemon|xmlteam|msc-booking", re.I)
@@ -92,6 +92,12 @@ def _full_name(n: str) -> bool:
     parts = (n or "").split()
     return len(parts) >= 2 and parts[0].lower().rstrip(".") not in (
         a.rstrip(".") for a in _ANREDE) and not _generic_name(n)
+
+
+def _form_name(subject: str) -> str:
+    """Name aus dem Formular-Betreff: „Reiseanfrage ⚓ Ziel — 2 Erw. — Erika Muster"."""
+    parts = [x.strip() for x in re.split(r"[—–]", subject or "") if x.strip()]
+    return parts[-1] if len(parts) >= 2 and _full_name(parts[-1]) else ""
 
 
 def _name_parts(n: str) -> tuple[str, str]:
@@ -208,29 +214,50 @@ def summaries() -> list[dict] | None:
     out: list[dict] = []
     for m, direction in chosen:
         cid = m.get("conversationId") or m["id"]
-        # ":v3"/":out3": erzwingt EINMALIGE Neu-Zusammenfassung bei Prompt-Änderung
-        # (aktuell: Namens-Extraktion MIT Vornamen aus dem gesamten Text).
-        key = f"{cid}:{m['receivedDateTime']}" + (":out3" if direction == "out" else ":v3")
+        subject = m.get("subject", "") or ""
         who = _recipient(m)[0] if direction == "out" else _sender(m)
-        if key in cache:
-            info = cache[key]
+        addr = (_recipient(m)[1] if direction == "out" else _addr(m)).lower()
+
+        # Website-Reiseanfrage: KEINE KI. Das Formular ist strukturiert – Name, echte
+        # Adresse und Wünsche stehen als Felder drin, genau wie in der CRM-Liste. Die
+        # KI hat daraus mal eine Zusammenfassung gemacht und mal (bei einem API-Fehler)
+        # einen Roh-Textblock; die Relay-Adresse formresponses@… als Identität hat
+        # zusätzlich alle Formular-Anfragen eines Tages zu EINER Person verschmolzen.
+        if direction == "in" and webform.is_form(addr, subject):
+            body = webform.plain((m.get("body") or {}).get("content", ""))
+            form = webform.fields(body)
+            rt = (m.get("replyTo") or [{}])[0].get("emailAddress") or {}
+            # Relay-Adresse nie übernehmen: lieber gar keine, sonst erbt der nächste
+            # Formular-Kunde den Namen des vorigen (Adress-Verzeichnis weiter unten).
+            addr = ((rt.get("address") or "").lower()
+                    or webform.clean_mail(form.get("mail")) or "")
+            name = (form.get("kunde") or _form_name(subject) or rt.get("name") or "").strip()
+            info = {"zusammenfassung": webform.wish_line(form) or body[:200],
+                    "problem": False, "name": name, "anfrage": True}
         else:
-            try:
-                info = _summarize(m.get("subject", ""), who, _body_text(m),
-                                  outgoing=(direction == "out"))
-            except Exception:  # noqa: BLE001
-                info = {"zusammenfassung": (m.get("bodyPreview", "") or "")[:150], "problem": False}
-            cache[key] = info
-            changed = True
+            # ":v3"/":out3": erzwingt EINMALIGE Neu-Zusammenfassung bei Prompt-Änderung
+            # (aktuell: Namens-Extraktion MIT Vornamen aus dem gesamten Text).
+            key = f"{cid}:{m['receivedDateTime']}" + (":out3" if direction == "out" else ":v3")
+            if key in cache:
+                info = cache[key]
+            else:
+                try:
+                    info = _summarize(subject, who, _body_text(m),
+                                      outgoing=(direction == "out"))
+                    cache[key] = info          # NUR Erfolge cachen – ein einmaliger
+                    changed = True             # API-Fehler blieb sonst für immer stehen
+                except Exception:  # noqa: BLE001
+                    info = {"zusammenfassung": (m.get("bodyPreview", "") or "")[:150],
+                            "problem": False}
+            name = str(info.get("name", "") or "").strip()
+
         stamp = (m.get("sentDateTime") if direction == "out" else m["receivedDateTime"]) or m["receivedDateTime"]
         when = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone()
-        name = str(info.get("name", "") or "").strip()
-        addr = (_recipient(m)[1] if direction == "out" else _addr(m)).lower()
         # Anzeige: echter Kundenname schlägt generische Absender/Empfänger
         # ('morr.de' beim Website-Formular, nackte Adressen)
         kontakt = name if (name and _generic_name(who)) else (who or name)
         out.append({"kontakt": kontakt, "name": name, "addr": addr,
-                    "betreff": m.get("subject", ""),
+                    "betreff": subject,
                     "text": info.get("zusammenfassung", ""),
                     "problem": bool(info.get("problem")) and direction == "in",
                     "anfrage": bool(info.get("anfrage")) and direction == "in",
