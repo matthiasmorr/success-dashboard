@@ -1,10 +1,14 @@
-"""Website-Reiseanfrage (Netlify-Formular) auslesen – rein textbasiert, ohne KI.
+"""Website-Reiseanfrage auslesen – rein textbasiert, ohne KI.
 
-Die Anfragen vom morr.de-Formular kommen technisch alle von derselben Relay-Adresse
-`formresponses@netlify.com`; die echte Kundenadresse steht im Reply-To, der Name im
-Betreff, die Wünsche als Label/Wert-Paare im Rumpf. Beide Auswerter – die CRM-Liste
-(`leads`) und die Postfach-Aktivität (`postfach_summary`) – brauchen genau das, also
-liegt es hier gemeinsam statt zweimal.
+Die Anfragen vom morr.de-Formular kommen technisch nie vom Kunden selbst: bis
+September 2026 vom Netlify-Relay `formresponses@netlify.com`, seither aus dem eigenen
+Postfach (ein Zapier-Zap baut die Mail und verschickt sie über Microsoft Graph). Die
+echte Kundenadresse steht in beiden Fällen im Reply-To, der Name im Betreff.
+
+Zwei Formular-Generationen, zwei Bauarten des Rumpfs – `parse()` nimmt beide:
+Label/Wert-Paare als Fließtext (alt) und die Beschriftung/Wert-Tabelle der neuen Mail.
+Beide Auswerter – die CRM-Liste (`leads`) und die Postfach-Aktivität
+(`postfach_summary`) – brauchen genau das, also liegt es hier gemeinsam statt zweimal.
 """
 from __future__ import annotations
 
@@ -26,8 +30,8 @@ FORM_LABELS: list[tuple[str, str]] = [
     ("beginn", r"Beginn der Reise\s*:"),
     ("ende", r"Ende der Reise\s*:"),
     ("getraenke", r"Getr(?:ä|ae)nkepaket\s*:"),
-    ("dauer", r"Reisedauer\s*\*?" + _P),
-    ("budget", r"Gibt es ein Gesamtbudget\?" + _P),
+    ("dauer", r"Reisedauer(?:\s*in\s*Tagen)?\s*\*?" + _P),
+    ("budget", r"(?:Gibt es ein )?Gesamtbudget\??(?:\s*in\s*(?:€|Euro))?\s*\*?" + _P),
     ("von", r"Fr(?:ü|ue)heste Anreise\s*:"),
     ("bis", r"Sp(?:ä|ae)teste Abreise\s*:"),
     ("reederei", r"Wunschreederei" + _P),
@@ -88,6 +92,83 @@ def fields(text: str) -> dict:
         if val and key and key not in out:
             out[key] = val[:160]
     return out
+
+
+# ===================== Formular-Generation 2026 =====================
+# Die neue Mail (Zapier → Graph) trägt ihre Angaben als Beschriftung/Wert-Tabelle.
+# Ausgewertet wird deshalb das HTML, nicht der Fließtext: die Beschriftungen stehen
+# ohne Doppelpunkt, im Text wäre „Kabine" nicht vom selben Wort im Kundenfreitext zu
+# unterscheiden („Kabinenwunsch mit Sitzbank am Fenster").
+FORM_FOOTER = "morr.de/reiseanfrage"          # Fußzeile jeder Formular-Mail
+_ROW_RE = re.compile(
+    r'<td[^>]*class="k"[^>]*>(.*?)</td>\s*<td[^>]*class="v"[^>]*>(.*?)</td>', re.S | re.I)
+_QUOTE_RE = re.compile(r'<p[^>]*font-style:\s*italic[^>]*>(.*?)</p>', re.S | re.I)
+# Beschriftung → derselbe Schlüssel wie beim alten Formular. „Reisetermin" ist der
+# feste Termin der konkreten Anfrage (beginn/ende), „Zeitfenster" der Spielraum der
+# offenen Anfrage (von/bis) – dieselbe Unterscheidung wie in FORM_LABELS.
+LABELS_2026 = {
+    "schiff": "schiff", "reiseziel": "ziel", "dauer": "dauer", "kabine": "kabine",
+    "abflughafen": "flughafen", "getränkepaket": "getraenke",
+    "wunschreederei": "reederei", "budget": "budget", "name": "kunde",
+    "telefon": "telefon", "e-mail": "mail", "kontaktweg": "kontaktweg",
+    "kreuzfahrt-erfahrung": "erfahrung", "gut gefallen": "gut",
+    "weniger gut gefallen": "schlecht", "offen für neues": "neue_reedereien",
+    "deutsch an bord": "w_sprache", "viel inklusive": "w_inklusive",
+    "angebot für kinder": "w_kinder", "preis oder komfort": "stil",
+    "schiffsgröße": "schiffsgroesse", "anreise": "anreise",
+    "häfen oder seetage": "seetage", "perfekter tag an bord": "bordtag",
+}
+_MONATE = {m: i for i, m in enumerate(
+    ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August",
+     "September", "Oktober", "November", "Dezember"], start=1)}
+
+
+def _iso(v: str) -> str:
+    """„27. Februar 2028" → „2028-02-27"; alles andere unverändert (die Anzeige
+    schneidet das Datum stellengenau aus der ISO-Form heraus)."""
+    m = re.match(r"\s*(\d{1,2})\.\s*([A-Za-zÄÖÜäöü]+)\s+(\d{4})", v or "")
+    if m and m.group(2).capitalize() in _MONATE:
+        return f"{m.group(3)}-{_MONATE[m.group(2).capitalize()]:02d}-{int(m.group(1)):02d}"
+    return v
+
+
+def fields_2026(html: str) -> dict:
+    """Felder der neuen Formular-Mail aus ihrer Beschriftung/Wert-Tabelle."""
+    out: dict[str, str] = {}
+    for label, value in _ROW_RE.findall(html or ""):
+        key = LABELS_2026.get(plain(label).lower())
+        val = plain(value)
+        if key and val and key not in out:
+            out[key] = val[:160]
+        elif val and plain(label).lower() in ("reisetermin", "zeitfenster"):
+            # „27. Februar 2028 bis 12. März 2028 (5 Monate Spielraum)"
+            roh = re.sub(r"\([^)]*Spielraum[^)]*\)", "", val).strip()
+            felder = (("beginn", "ende") if plain(label).lower() == "reisetermin"
+                      else ("von", "bis"))
+            for feld, teil in zip(felder, re.split(r"\s+bis\s+", roh, maxsplit=1)):
+                if teil.strip():
+                    out[feld] = _iso(teil.strip())
+        elif val and plain(label).lower() == "reisende":
+            # „2 Erwachsene + 1 Kind (7)"
+            for feld, muster in (("erwachsene", r"(\d+)\s*Erwachsene"),
+                                 ("kinder", r"(\d+)\s*Kind")):
+                treffer = re.search(muster, val, re.I)
+                if treffer:
+                    out[feld] = treffer.group(1)
+            alter = re.search(r"Kind(?:er)?\s*\(([^)]*)\)", val, re.I)
+            if alter and alter.group(1).strip():
+                out["kinderalter"] = alter.group(1).strip()
+    zitat = _QUOTE_RE.search(html or "")
+    if zitat:
+        text = plain(zitat.group(1)).strip("„“\"\' ")
+        if text:
+            out["wunsch"] = text[:160]
+    return out
+
+
+def parse(html: str) -> dict:
+    """Formularfelder aus der Roh-Mail – egal welche Formular-Generation."""
+    return fields(plain(html)) or fields_2026(html)
 
 
 def clean_mail(v: str | None) -> str:

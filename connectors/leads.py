@@ -168,12 +168,11 @@ def _collect(days: int) -> dict[str, dict]:
             ea = ((m.get("from") or {}).get("emailAddress") or {})
             addr, disp = (ea.get("address") or "").lower(), ea.get("name") or ""
             subject = m.get("subject", "") or ""
-            body = webform.plain((m.get("body") or {}).get("content", ""))
             form: dict = {}
             if webform.is_form(addr, subject):
                 # Website-Formular: echte Kundenadresse steht im Reply-To
                 rt = (m.get("replyTo") or [{}])[0].get("emailAddress") or {}
-                form = webform.fields(body)
+                form = webform.parse((m.get("body") or {}).get("content", ""))
                 addr = ((rt.get("address") or "").lower() or webform.clean_mail(form.get("mail"))
                         or addr)
                 disp = form.get("kunde") or _form_name(subject) or rt.get("name") or disp

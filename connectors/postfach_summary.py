@@ -224,8 +224,9 @@ def summaries() -> list[dict] | None:
         # einen Roh-Textblock; die Relay-Adresse formresponses@… als Identität hat
         # zusätzlich alle Formular-Anfragen eines Tages zu EINER Person verschmolzen.
         if direction == "in" and webform.is_form(addr, subject):
-            body = webform.plain((m.get("body") or {}).get("content", ""))
-            form = webform.fields(body)
+            roh = (m.get("body") or {}).get("content", "")
+            body = webform.plain(roh)
+            form = webform.parse(roh)
             rt = (m.get("replyTo") or [{}])[0].get("emailAddress") or {}
             # Relay-Adresse nie übernehmen: lieber gar keine, sonst erbt der nächste
             # Formular-Kunde den Namen des vorigen (Adress-Verzeichnis weiter unten).
