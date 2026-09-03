@@ -233,6 +233,13 @@ def summaries() -> list[dict] | None:
             addr = ((rt.get("address") or "").lower()
                     or webform.clean_mail(form.get("mail")) or "")
             name = (form.get("kunde") or _form_name(subject) or rt.get("name") or "").strip()
+            if name and name == name.lower():
+                name = name.title()          # „seeger" aus dem Formular -> „Seeger"
+            # Der Absendername der Formular-Mail ist NIE der Kunde: seit September
+            # 2026 kommt sie aus dem eigenen Haus als „Matthias Morr", und der sah
+            # wie ein echter Name aus — die Anfrage von weseeger@ stand dann unter
+            # „Matthias Morr" (03.09.26). Der Kunde ist, wer im Formular steht.
+            who = name or rt.get("name") or ""
             info = {"zusammenfassung": webform.wish_line(form) or body[:200],
                     "problem": False, "name": name, "anfrage": True}
         else:
