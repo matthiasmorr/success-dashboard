@@ -23,7 +23,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import requests
 
-from . import graph, ledger, webform
+from . import crm_db, graph, ledger, webform
 from .base import Category, ConnectorResult, Metric
 from .postfach_summary import _form_name, _full_name, _generic_name, _name_parts
 
@@ -283,12 +283,20 @@ def summary(days: int = DAYS) -> dict | None:
 
 
 def fetch() -> ConnectorResult:
-    if not graph.configured():
-        return ConnectorResult.missing_config(NAME, CAT, "MS-Graph-Zugang fehlt (.env)")
+    # Seit 03.09.26 aus dem CRM (leads-Tabelle): dort laufen alle Ordner, die
+    # Cc-Empfänger, die Alias-Adressen und die zeitlich verankerte Conversion
+    # zusammen. Der Postfach-Scan hier ist nur noch der Rückfall ohne crm.db.
     try:
-        s = summary()
+        s = crm_db.leads_summary(DAYS)
     except Exception as e:  # noqa: BLE001
-        return ConnectorResult.failed(NAME, CAT, str(e)[:200])
+        return ConnectorResult.failed(NAME, CAT, f"CRM: {str(e)[:180]}")
+    if s is None:
+        if not graph.configured():
+            return ConnectorResult.missing_config(NAME, CAT, "MS-Graph-Zugang fehlt (.env)")
+        try:
+            s = summary()
+        except Exception as e:  # noqa: BLE001
+            return ConnectorResult.failed(NAME, CAT, str(e)[:200])
     if s is None:
         return ConnectorResult.missing_config(NAME, CAT, "Postfach nicht verbunden")
 
@@ -308,8 +316,9 @@ def fetch() -> ConnectorResult:
                     f"(davon {s['n_kit_aktiv']} aktiv). Der Rest ist ungenutztes Potenzial."),
         Metric("Anfrage → Vorgang", f"{s['conversion']:.0f} %".replace(".", ","),
                delta=f"{s['n_vorgang']} Vorgänge · {s['n_gebucht']} fest", delta_color="off",
-               help="Anteil der Website-Anfragen, zu denen es im Vorgangs-Ledger bereits "
-                    "eine Option oder Festbuchung gibt (Abgleich über den Nachnamen)."),
+               help="Anteil der Website-Anfragen, zu denen es bereits eine Option oder "
+                    "Festbuchung gibt — aus dem CRM: nur Buchungen ab dem Erstkontakt, "
+                    "Zuordnung über E-Mail oder eindeutigen Nachnamen."),
         Metric("Wunschbudget", f"{s['budget_summe']:,.0f} €".replace(",", "."),
                delta=f"{s['n_anfragen']} Anfragen", delta_color="off",
                help="Summe der im Website-Formular genannten Gesamtbudgets der letzten "
@@ -317,6 +326,7 @@ def fetch() -> ConnectorResult:
     ]
     return ConnectorResult(
         name=NAME, category=CAT, metrics=metrics,
-        caption=f"{s['n_kontakte']} Kontakte · {s['n_nokit']} noch nicht im Morrletter",
+        caption=f"{s['n_kontakte']} Kontakte · {s['n_nokit']} noch nicht im Morrletter"
+                + (" · Quelle: morrCRM" if s.get("quelle") else ""),
         hero_sections=[{"title": "🤝 Sales-Leads", "metrics": metrics, "list": None,
                         "leads": s["leads"], "stats": s}])

@@ -41,7 +41,16 @@ SCHNITT_FENSTER = int(os.getenv("KREUZFAHRTSTUDIO_SCHNITT_FENSTER", "7"))
 
 
 def provision_satz(d: date) -> float:
-    """Geltender Provisionssatz für eine Buchung mit Buchungsdatum `d`."""
+    """Geltender Provisionssatz für eine Buchung mit Buchungsdatum `d`.
+
+    Die Regel liegt seit 03.09.26 im CRM (crm/provision.py) — das ist die eine
+    Stelle dafür. Die .env-Werte hier sind nur noch der Rückfall ohne CRM
+    (GitHub-Action).
+    """
+    from . import crm_db  # noqa: PLC0415
+    satz = crm_db.provision_satz(d)
+    if satz is not None:
+        return satz
     return PROVISION_SATZ_NEU if d >= PROVISION_AB else PROVISION_SATZ
 
 
@@ -106,6 +115,12 @@ def _read_excel_smart(source) -> pd.DataFrame:
 
 
 def _load_df() -> pd.DataFrame | None:
+    # Zuerst das CRM: dieselbe Excel, aber schon normalisiert (Status OK/OP/XX,
+    # Preise, Datumsformate). Ohne crm.db (GitHub-Action) der alte Excel-Weg.
+    from . import crm_db  # noqa: PLC0415
+    df = crm_db.als_dataframe()
+    if df is not None and len(df):
+        return df
     path = os.getenv("KREUZFAHRTSTUDIO_XLSX", "").strip()
     if path and os.path.exists(path):
         return _read_excel_smart(path)
@@ -310,7 +325,11 @@ def fetch() -> ConnectorResult:
                 NAME, CAT,
                 "Datenquelle fehlt: KREUZFAHRTSTUDIO_XLSX (lokal) oder KREUZFAHRTSTUDIO_FILE_ID + Service Account",
             )
-        return compute(df)
+        res = compute(df)
+        from . import crm_db  # noqa: PLC0415
+        if crm_db.verfuegbar() and res.ok:
+            res.caption = f"{res.caption} · Quelle: morrCRM"
+        return res
     except Exception as e:  # noqa: BLE001
         return ConnectorResult.failed(NAME, CAT, str(e))
 

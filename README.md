@@ -48,7 +48,10 @@ app.py                Streamlit-UI (morr.de-Branding, gruppiert nach Einnahmen /
 .streamlit/config.toml  Theme (Indigo/Magnolia, Fraunces/Lato)
 connectors/
   base.py             ConnectorResult + Metric (gemeinsames Datenmodell)
-  kreuzfahrtstudio.py Festbuchungen (.xlsx, pandas)  ✅ live (lokale .xlsx; PROD=Service Account)
+  crm_db.py           morrCRM (~/morrCRM/crm.db, nur lesend) ✅ seit 03.09.26 ERSTE Quelle für
+                      Festbuchungen, Provisionssatz (crm/provision.py) und Sales-Leads;
+                      ohne crm.db (GitHub-Action) greifen die alten Wege darunter
+  kreuzfahrtstudio.py Festbuchungen (.xlsx, pandas)  ✅ Rückfall ohne CRM (lokale .xlsx; PROD=Service Account)
   youtube.py          YouTube Data API v3      ✅ live getestet (nur Gesamtstand – tägl. Zugänge = Phase 2c)
   kit.py              KIT v4 growth_stats      ✅ live verifiziert: neu heute + 30 Tage (Key fehlt)
   kit_broadcast.py    KIT v4 broadcast-stats   ✅ live verifiziert: Öffnungs-/Klickrate letzte Aussendung (Key fehlt)
