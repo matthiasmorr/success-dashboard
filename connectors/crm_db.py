@@ -75,6 +75,20 @@ def als_dataframe():
     } for r in rows])
 
 
+# ---------------------------------------------------------------- Anfragen
+def anfragen(seit: date, bis: date) -> int | None:
+    """Website-Anfragen (Formular) mit Eingang im Fenster, aus leads.anfrage_am."""
+    con = _con()
+    if con is None:
+        return None
+    n = con.execute(
+        """SELECT COUNT(*) FROM leads
+            WHERE art = 'lead' AND anfrage = 1
+              AND anfrage_am BETWEEN ? AND ?""", (seit.isoformat(), bis.isoformat())).fetchone()[0]
+    con.close()
+    return n
+
+
 # ---------------------------------------------------------------- Leads
 def leads_summary(days: int = 30) -> dict | None:
     """Sales-Leads in der Struktur von connectors.leads.summary(), aus leads-Tabelle.

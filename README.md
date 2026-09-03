@@ -17,7 +17,9 @@ Streamlit-App, läuft lokal auf dem Mac und später in der Streamlit Community C
 
 ## Konfiguration
 
-Keys in `.env` (Vorlage: `.env.example`). Bereits gesetzt: `YOUTUBE_API_KEY`,
+Keys in `.env` (Vorlage: `.env.example`). Zusätzlich liest die App
+`~/.config/morr/.env` — die gemeinsame Schlüsseldatei mit morrCRM (Graph, Kit,
+Anthropic, YouTube; seit 03.09.26). Die lokale `.env` hat Vorrang. Bereits gesetzt: `YOUTUBE_API_KEY`,
 `YOUTUBE_CHANNEL_ID`, `ANTHROPIC_API_KEY` (aus dem Video-Projekt übernommen).
 
 | Variable | Status | Wofür |
@@ -58,7 +60,6 @@ connectors/
   digistore.py        Digistore24 Vendor-API   ✅ live (listTransactions → summary)
   awin.py             Awin Publisher-API       ✅ live (transactions, approved+pending)
   graph.py            Microsoft-Graph-Client (buchung@, app-only, Mail.Read)
-  buchungen.py        Buchungs-Pipeline (Pipeline)  ✅ live (Anfragen/Reisebuchungen/IBE-Zähler)
   booking_value.py    Buchungswert-Tendenz (KI)     ✅ live – liest Gesamtreisepreis aus Bestätigungs-PDFs
                       (Claude Haiku), Dedup je Vorgang, Cache (data/buchungswert_cache.json)
   heute.py            🎯 Erfolg                     ✅ Provision YTD + Buchungswert heute/7T + Tagespuls

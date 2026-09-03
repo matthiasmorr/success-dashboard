@@ -353,32 +353,3 @@ def collect(days: int = 8, top: int = 80) -> dict[str, dict] | None:
     return {g.pop("_key"): g for g in groups}
 
 
-def today_summary() -> dict | None:
-    """Tageskennzahlen für den Hero. None, wenn Graph nicht konfiguriert.
-
-    Buchungswert = Gesamtwert aller Wert-Bestätigungen (Buchungen + Optionen) des Tages;
-    Anzahl Buchungen / Optionen getrennt. Vergleich heute vs. gestern.
-    """
-    data = collect(days=8)
-    if data is None:
-        return None
-    heute = datetime.now(timezone.utc).date()
-    gestern = heute - timedelta(days=1)
-    h, g = heute.isoformat(), gestern.isoformat()
-
-    def wert(day: str) -> float:
-        return sum(v["value"] for v in data.values() if v["date"] == day)
-
-    # Einzel-Auflistung (neueste zuerst) für die Hero-Liste
-    items = sorted(
-        ({"art": v["art"], "value": v["value"], "date": v["date"],
-          "nachname": v.get("nachname", ""), "label": v.get("label", "")} for v in data.values()),
-        key=lambda x: (x["date"], x["value"]), reverse=True)
-
-    return {
-        "wert_heute": wert(h),
-        "wert_gestern": wert(g),
-        "n_buchung_heute": sum(1 for v in data.values() if v["date"] == h and v["art"] == "buchung"),
-        "n_option_heute": sum(1 for v in data.values() if v["date"] == h and v["art"] == "option"),
-        "items": items,
-    }

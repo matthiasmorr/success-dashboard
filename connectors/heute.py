@@ -14,7 +14,7 @@ from datetime import date, timedelta
 
 import requests
 
-from . import (aida_pvn, digistore, graph, kit, kreuzfahrtstudio, landausfluege, lexware,
+from . import (aida_pvn, crm_db, digistore, graph, kit, kreuzfahrtstudio, landausfluege, lexware,
                lexware_income, ledger, postfach_summary, social, youtube, youtube_revenue)
 from .base import Category, ConnectorResult, Metric
 
@@ -102,8 +102,6 @@ def fetch() -> ConnectorResult:
     awin_7, awin_30 = _safe(_awin_range, d7, today), _safe(_awin_range, d30, today)
     awin_m = _safe(_awin_range, month_start, today)
     lex_30d = lex["total_30d"] if lex else 0.0   # fakturierte Einnahmen (Lexware), nur in Erfolg 30T
-
-    led_dict = led["_led"] if led else None
 
     # Festbuchungen-€ = AUSSCHLIESSLICH die Excel (offizieller Kreuzfahrtstudio-CRM-Export,
     # vollständig & autoritativ). Mails werden NICHT eingemischt: ihre Vorgangs-/Reise-Nr sind
@@ -283,8 +281,18 @@ def fetch() -> ConnectorResult:
                                 help="Gesamtwert aller offenen Optionen – potenziell, NICHT als Einnahme "
                                      "gezählt. 'Preis offen' = Betrag in keiner Bestätigung erkennbar; "
                                      "die Summe untertreibt dann."))
-    if postfach is not None:
-        # Leads: eingehende Kundenanfragen ohne Vorgang (KI-erkannt aus dem Postfach)
+    # Anfragen: seit 03.09.26 aus dem CRM (Formular-Eingänge, leads.anfrage_am) —
+    # dieselbe Zählung wie im CRM-Tab Sales-Leads. Ohne crm.db wie bisher die
+    # KI-Erkennung aus der Postfach-Aktivität.
+    n_lead_heute = _safe(crm_db.anfragen, today, today)
+    if n_lead_heute is not None:
+        n_lead_7d = _safe(crm_db.anfragen, d7, today) or 0
+        buchungen.append(Metric("Anfragen heute", n_lead_heute,
+                                delta=f"{n_lead_7d} in 7 Tagen", delta_color="off",
+                                help="Reiseanfragen über das Formular auf morr.de, gezählt "
+                                     "wie im CRM (Sales-Leads). Noch kein Vorgang, aber "
+                                     "potenzielle Buchung."))
+    elif postfach is not None:
         n_lead_heute = sum(1 for a in postfach
                            if a.get("anfrage") and a.get("date") == today.isoformat())
         n_lead_7d = sum(1 for a in postfach if a.get("anfrage"))

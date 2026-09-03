@@ -232,13 +232,6 @@ def realized_value(led: dict, start_iso: str, end_iso: str) -> float:
         if _is_real_fest(e) and e.get("buchung_date") and start_iso <= e["buchung_date"] <= end_iso)
 
 
-def realized_count(led: dict, start_iso: str, end_iso: str) -> int:
-    """Anzahl Festbuchungen mit buchung_date im Fenster (Wert > 0, ohne Stornos)."""
-    return sum(
-        1 for e in led.values()
-        if _is_real_fest(e) and e.get("buchung_date") and start_iso <= e["buchung_date"] <= end_iso)
-
-
 def summary() -> dict | None:
     """Alle Kennzahlen für den Hero. None, wenn Graph/Klassifikation nicht verfügbar.
 
@@ -297,5 +290,4 @@ def summary() -> dict | None:
         # Pipeline-Summe untertreibt dann; ehrlich ausweisen statt still 0 zu zählen
         "pipeline_missing": sum(1 for e in open_opts if not e.get("value")),
         "items": items,
-        "_led": led,   # roher Vorgangs-Dict für den Hybrid-Festwert (Excel + Mail)
     }

@@ -254,69 +254,6 @@ def ok_bookings(df: pd.DataFrame | None = None) -> tuple[list[tuple[date, float]
     return rows, latest
 
 
-def ok_booking_ids(df: pd.DataFrame | None = None) -> set[str]:
-    """Alle Identifikatoren der OK-Buchungen (Vorgangs-Nr UND Reise-Nr, je komma-getrennt).
-
-    Für die Deduplizierung Excel ↔ Mail-Ledger: die KI-Klassifikation der Mails greift mal
-    die Vorgangs-Nr, mal die Reise-Nr ab – beide müssen als Schlüssel gelten, sonst wird
-    dieselbe Buchung doppelt gezählt (Excel-Buchungsdatum ≠ Mail-Versanddatum).
-    """
-    if df is None:
-        df = _load_df()
-    if df is None:
-        return set()
-    status_col = _find_col(df, "vorgangsstatus")
-    vg_col = _find_col(df, "vorgangs-nr")
-    reise_col = _find_col(df, "reise-nr")
-    ids: set[str] = set()
-    for r in df.to_dict("records"):
-        if not str(r.get(status_col, "")).strip().upper().startswith("OK"):
-            continue
-        for col in (vg_col, reise_col):
-            if not col:
-                continue
-            for tok in str(r.get(col, "")).replace(";", ",").split(","):
-                tok = tok.strip()
-                if tok and tok.lower() not in ("nan", "none"):
-                    ids.add(tok)
-    return ids
-
-
-def figures(today: date | None = None) -> dict | None:
-    """Rohzahlen für andere Connectoren (z.B. den Erfolgs-Hero). None wenn keine Quelle."""
-    df = _load_df()
-    if df is None:
-        return None
-    today = today or date.today()
-    status_col = _find_col(df, "vorgangsstatus")
-    buchung_col = _find_col(df, "buchung")
-    price_col = _find_col(df, "preis kd") or _find_col(df, "preis va")
-    if not (status_col and buchung_col and price_col):
-        return None
-    month_vol: dict[tuple[int, int], float] = {}
-    latest: date | None = None
-    for r in df.to_dict("records"):
-        b = _to_date(r.get(buchung_col))
-        if not b:
-            continue
-        if latest is None or b > latest:
-            latest = b
-        if str(r.get(status_col, "")).strip().upper().startswith("OK"):
-            ym = (b.year, b.month)
-            month_vol[ym] = month_vol.get(ym, 0.0) + _to_money(r.get(price_col))
-    if not month_vol:
-        return None
-    last_ym = max(month_vol)
-    return {
-        "rate": PROVISION_SATZ,
-        "last_ym": last_ym,
-        "last_month_label": f"{_MONATE[last_ym[1]]} {last_ym[0]}",
-        "last_vol": month_vol[last_ym],
-        "ytd_vol": sum(v for (y, _), v in month_vol.items() if y == today.year),
-        "latest_booking": latest,
-    }
-
-
 def fetch() -> ConnectorResult:
     try:
         df = _load_df()

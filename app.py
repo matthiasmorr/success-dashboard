@@ -33,6 +33,8 @@ if hasattr(time, "tzset"):
     time.tzset()
 
 load_dotenv()
+# Gemeinsame Schlüssel mit morrCRM (03.09.26); die lokale .env hat Vorrang
+load_dotenv(Path('~/.config/morr/.env').expanduser())
 
 # Streamlit Community Cloud: Secrets → os.environ, damit die Connectoren (os.getenv)
 # sie wie lokal aus der .env lesen. Lokal hat .env Vorrang (setdefault überschreibt nicht).
