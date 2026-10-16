@@ -112,7 +112,7 @@ def main() -> None:
     print(f"  Podcast Kontakte/Folge, Folgen:   {daten['podcast']['kontakte_pro_folge']}, {daten['podcast']['folgen']}")
     if not social.get("tiktok"):
         print(f"  TikTok-Follower:                  {daten['social']['tiktok_follower']}")
-    print(f"  Zielgruppe:                       {daten['zielgruppe']}")
+    print(f"  Zielgruppe je Kanal:              Stand {daten['zielgruppe_stand']} (YouTube Studio, Spotify, Meta)")
 
     neu = json.dumps(daten, ensure_ascii=False, indent=2) + "\n"
     if dry:
